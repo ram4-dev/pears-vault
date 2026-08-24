@@ -1,2 +1,12 @@
-# Local Pi runtime state
+# Dependencies and build output
+node_modules/
+dist/
+*.tsbuildinfo
+
+# Local runtime state and test artifacts
+.pears-vault/
+coverage/
+*.log
+
+# Local agent runtime state
 .atl/

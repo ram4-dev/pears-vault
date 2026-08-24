@@ -1,0 +1,48 @@
+{
+  "name": "pears-vault",
+  "version": "0.1.0",
+  "description": "A CLI-first peer-to-peer encrypted secret vault built on Pear Runtime primitives.",
+  "type": "module",
+  "bin": {
+    "pears-vault": "dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsx src/cli.ts",
+    "test": "tsx --test test/**/*.test.ts",
+    "test:unit": "tsx --test test/crypto.test.ts test/validation.test.ts",
+    "test:integration": "tsx --test test/integration.test.ts",
+    "check": "npm run build && npm test"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ram4-dev/pears-vault.git"
+  },
+  "keywords": [
+    "pear-runtime",
+    "hyperdht",
+    "hypercore",
+    "hyperbee",
+    "secrets"
+  ],
+  "author": "ram4-dev",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "b4a": "^1.8.1",
+    "hyperbee": "^2.27.3",
+    "hypercore": "^11.35.2",
+    "hyperdht": "^6.33.2"
+  },
+  "devDependencies": {
+    "@types/node": "^26.3.0",
+    "tsx": "^4.23.12",
+    "typescript": "^7.0.2"
+  }
+}
