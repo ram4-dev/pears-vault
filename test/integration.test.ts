@@ -23,6 +23,15 @@ async function getFreeUdpPort(): Promise<number> {
   return address.port
 }
 
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<T>((_resolve, reject) => {
+      setTimeout(() => reject(new Error('Timed out waiting for live peer update')), timeoutMs)
+    })
+  ])
+}
+
 function parseJson(value: string): Record<string, unknown> {
   try {
     return JSON.parse(value) as Record<string, unknown>
@@ -44,7 +53,15 @@ test('two peers write, read, and live-sync through a local HyperDHT', { timeout:
     const bootstrap = [{ host: '127.0.0.1', port: address.port }]
 
     host = await startHost({ dataDir: join(root, 'host'), bootstrap, log: () => undefined })
-    first = await joinVault(host.publicKey, { dataDir: join(root, 'peer-1'), bootstrap })
+    let resolveFirstUpdate: (() => void) | undefined
+    const firstUpdated = new Promise<void>(resolve => { resolveFirstUpdate = resolve })
+    first = await joinVault(host.publicKey, {
+      dataDir: join(root, 'peer-1'),
+      bootstrap,
+      onUpdate: ({ name }) => {
+        if (name === 'beta') resolveFirstUpdate?.()
+      }
+    })
     second = await joinVault(host.publicKey, { dataDir: join(root, 'peer-2'), bootstrap })
 
     await first.add('alpha', 'first-secret')
@@ -53,6 +70,7 @@ test('two peers write, read, and live-sync through a local HyperDHT', { timeout:
     assert.equal(await second.get('alpha'), 'first-secret')
 
     await second.add('beta', 'second-secret')
+    await withTimeout(firstUpdated, 2_000)
     assert.deepEqual(await first.list(), ['alpha', 'beta'])
     assert.equal(await first.get('beta'), 'second-secret')
   } finally {

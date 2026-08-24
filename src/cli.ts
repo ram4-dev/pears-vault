@@ -107,7 +107,12 @@ export async function runCli(argv = process.argv.slice(2)): Promise<void> {
     const publicKey = args[1]
     parsePublicKey(publicKey)
     const dataDir = dataDirOption ?? join(homedir(), '.pears-vault', 'peers', publicKey.slice(0, 16))
-    const peer = await joinVault(publicKey, { dataDir, bootstrap })
+    const peer = await joinVault(publicKey, {
+      dataDir,
+      bootstrap,
+      onUpdate: ({ name }) => console.log(`Vault updated: ${name}`),
+      onSyncError: error => console.error(`Live sync error: ${error.message}`)
+    })
     console.log(`Connected to vault ${publicKey.slice(0, 12)}…`)
     try {
       await runJoinRepl(peer)

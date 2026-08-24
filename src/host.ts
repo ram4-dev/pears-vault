@@ -5,13 +5,7 @@ import DHT from 'hyperdht'
 import Hypercore from 'hypercore'
 import Hyperbee from 'hyperbee'
 import { validateEnvelope } from './crypto.js'
-import {
-  CONTROL_CHANNEL,
-  REPLICATION_CHANNEL,
-  readChannel,
-  serveRpc,
-  type RpcRequest
-} from './protocol.js'
+import { createMux, serveRpc, type RpcRequest, type RpcServer } from './protocol.js'
 import { ensureDataDir, loadOrCreateDhtKeyPair, loadOrCreateVaultKey } from './storage.js'
 import { type BootstrapNode, validateSecretName } from './validation.js'
 
@@ -47,51 +41,64 @@ export async function startHost(options: HostOptions): Promise<VaultHost> {
 
   const dht = new DHT(options.bootstrap ? { bootstrap: options.bootstrap } : undefined)
   const sockets = new Set<any>()
+  const rpcServers = new Set<RpcServer>()
   let writeQueue: Promise<unknown> = Promise.resolve()
 
-  const handleRequest = async (request: RpcRequest): Promise<unknown> => {
-    if (request.type === 'hello') {
-      return {
-        protocol: 1,
-        coreKey: b4a.toString(core.key, 'hex'),
-        vaultKey: vaultKey.toString('hex'),
-        length: core.length
+  const broadcastUpdate = (name: string, length: number): void => {
+    for (const rpc of rpcServers) {
+      try {
+        rpc.notify('updated', { name, length })
+      } catch {
+        rpcServers.delete(rpc)
       }
     }
-
-    if (request.type === 'put') {
-      validateSecretName(request.name)
-      const encoded = serializeEnvelope(request.envelope)
-      writeQueue = writeQueue.then(async () => {
-        await bee.put(request.name, encoded)
-        return core.length
-      })
-      const length = await writeQueue
-      return { name: request.name, length }
-    }
-
-    throw new Error(`Unsupported request type: ${request.type}`)
   }
 
-  const server = dht.createServer(async (socket: any) => {
+  const server = dht.createServer((socket: any) => {
     sockets.add(socket)
-    socket.once('close', () => sockets.delete(socket))
-    socket.once('error', () => sockets.delete(socket))
+    const mux = createMux(socket)
+    let replicationAttached = false
+    const rpc = serveRpc(mux, async (request: RpcRequest): Promise<unknown> => {
+      if (request.type === 'hello') {
+        return {
+          protocol: 1,
+          coreKey: b4a.toString(core.key, 'hex'),
+          vaultKey: vaultKey.toString('hex'),
+          length: core.length
+        }
+      }
 
-    try {
-      const channel = await readChannel(socket)
-      if (channel === CONTROL_CHANNEL) {
-        serveRpc(socket, handleRequest)
-        return
+      if (request.type === 'replicate-ready') {
+        if (!replicationAttached) {
+          replicationAttached = true
+          core.replicate(mux)
+        }
+        return { length: core.length }
       }
-      if (channel === REPLICATION_CHANNEL) {
-        core.replicate(socket)
-        return
+
+      if (request.type === 'put') {
+        validateSecretName(request.name)
+        const encoded = serializeEnvelope(request.envelope)
+        writeQueue = writeQueue.then(async () => {
+          await bee.put(request.name, encoded)
+          return core.length
+        })
+        const length = await writeQueue as number
+        broadcastUpdate(request.name, length)
+        return { name: request.name, length }
       }
-      socket.destroy(new Error('Unknown PEARS VAULT channel'))
-    } catch (error) {
-      socket.destroy(error as Error)
+
+      throw new Error(`Unsupported request type: ${request.type}`)
+    })
+    rpcServers.add(rpc)
+
+    const cleanup = (): void => {
+      sockets.delete(socket)
+      rpcServers.delete(rpc)
+      rpc.close()
     }
+    socket.once('close', cleanup)
+    socket.once('error', cleanup)
   })
 
   await server.listen(keyPair)

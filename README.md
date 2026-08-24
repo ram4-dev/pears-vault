@@ -1,6 +1,6 @@
 # PEARS VAULT
 
-PEARS VAULT M0 is a CLI-first peer-to-peer secret vault built with Pear Runtime primitives. A host owns one persistent Hypercore/Hyperbee database; peers connect to the host by its HyperDHT public key, replicate the database live, and can submit encrypted writes.
+PEARS VAULT M1 is a CLI-first peer-to-peer secret vault built with Pear Runtime primitives. A host owns one persistent Hypercore/Hyperbee database; peers keep a long-lived HyperDHT connection open, replicate the database live, and can submit encrypted writes.
 
 ## Install
 
@@ -32,7 +32,7 @@ Join from another machine or terminal:
 pears-vault join <share-code>
 ```
 
-The joined peer provides an interactive prompt:
+The joined peer provides a long-lived interactive prompt. It remains connected and prints `Vault updated: <name>` whenever any connected peer changes the vault:
 
 ```text
 add github.token ghp_example
@@ -54,8 +54,8 @@ By default, data is stored under `~/.pears-vault`. To use an isolated DHT bootst
 
 - `host start` persists a HyperDHT keypair, a random 256-bit vault key, and a writer-owned Hypercore/Hyperbee.
 - `join` uses `dht.connect(hostPublicKey)`. HyperDHT wraps each connection in Noise SecretStream encryption and performs hole punching where the network permits it.
-- A control connection returns the Hypercore read capability and vault key to a peer that possesses the unguessable host share code.
-- A second tagged DHT connection carries the native `core.replicate(stream)` protocol continuously.
+- One persistent HyperDHT SecretStream is multiplexed with Protomux. Its control channel returns the Hypercore read capability and vault key, accepts ciphertext writes, and broadcasts update notifications.
+- Native Hypercore replication attaches to the same Protomux connection and remains open. Peers listen for Hypercore `append` events and synchronize each announced length in the background.
 - Hypercore is single-writer. Peers encrypt values locally, send only versioned AES-256-GCM envelopes to the host, and the host appends those ciphertext envelopes to Hyperbee. The replicated Hypercore therefore contains no plaintext secret values.
 - Secret names are visible metadata. Values use a fresh 96-bit IV, a 128-bit authentication tag, and the secret name as AES-GCM additional authenticated data.
 
@@ -74,7 +74,7 @@ npm run build
 npm test
 ```
 
-The integration test starts an isolated local HyperDHT bootstrap, one host and two independent peers. It verifies peer A writes, peer B reads, peer B writes, peer A observes the live update, and persisted Hyperbee values do not contain the plaintext.
+The integration test starts an isolated local HyperDHT bootstrap, one host and two independent long-lived peers. It verifies peer A writes, peer B reads, peer B writes, peer A receives the background live-update callback before issuing another command, and persisted Hyperbee values do not contain the plaintext. The compiled CLI test separately verifies that peer A prints `Vault updated: beta` while it remains connected.
 
 ## Pear documentation followed
 

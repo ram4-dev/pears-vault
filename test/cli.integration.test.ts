@@ -106,6 +106,7 @@ test('compiled CLI host and two joined peers synchronize live', { timeout: 45_00
     await second.waitFor(/Connected to vault/)
     second.send('add beta second-secret')
     await second.waitFor(/Added: beta/)
+    await first.waitFor(/Vault updated: beta/)
 
     first.send('list')
     await first.waitFor(/alpha\nbeta/)
