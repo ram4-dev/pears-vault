@@ -36,6 +36,9 @@ export async function startHost(options: HostOptions): Promise<VaultHost> {
   const log = options.log ?? console.log
   await ensureDataDir(options.dataDir)
   const keyPair = await loadOrCreateDhtKeyPair(options.dataDir)
+  const publicKey = b4a.toString(keyPair.publicKey, 'hex')
+  log(`PEARS_VAULT_PUBLIC_KEY=${publicKey}`)
+  log('Starting vault storage and announcing on HyperDHT…')
   const vaultKey = await loadOrCreateVaultKey(options.dataDir)
 
   const core = new Hypercore(join(options.dataDir, 'hypercore'))
@@ -92,9 +95,7 @@ export async function startHost(options: HostOptions): Promise<VaultHost> {
   })
 
   await server.listen(keyPair)
-  const publicKey = b4a.toString(keyPair.publicKey, 'hex')
   const coreKey = b4a.toString(core.key, 'hex')
-  log(`PEARS_VAULT_PUBLIC_KEY=${publicKey}`)
   log(`Vault data: ${options.dataDir}`)
   log('Host is serving encrypted vault replication and peer write requests.')
 

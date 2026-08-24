@@ -2,9 +2,9 @@
 /// <reference path="./vendor.d.ts" />
 import assert from 'node:assert/strict'
 import { createSocket } from 'node:dgram'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, rm, symlink } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { once } from 'node:events'
 import { test } from 'node:test'
@@ -25,8 +25,8 @@ class CliProcess {
   readonly child: ChildProcessWithoutNullStreams
   output = ''
 
-  constructor(args: string[], env: NodeJS.ProcessEnv) {
-    this.child = spawn(process.execPath, ['--import', 'tsx', 'src/cli.ts', ...args], {
+  constructor(args: string[], env: NodeJS.ProcessEnv, executable?: string) {
+    this.child = spawn(executable ?? process.execPath, executable ? args : ['--import', 'tsx', 'src/cli.ts', ...args], {
       cwd: process.cwd(),
       env: { ...process.env, ...env },
       stdio: ['pipe', 'pipe', 'pipe']
@@ -58,6 +58,26 @@ class CliProcess {
   }
 }
 
+test('linked CLI prints its public key before DHT announcement completes', { timeout: 10_000 }, async () => {
+  const root = await mkdtemp(join(tmpdir(), 'pears-vault-startup-'))
+  const unavailableBootstrap = `127.0.0.1:${await freeUdpPort()}`
+  const linkedBin = join(root, 'pears-vault')
+  await symlink(resolve('dist/cli.js'), linkedBin)
+  const host = new CliProcess(
+    ['host', 'start', '--data-dir', join(root, 'host')],
+    { PEARS_VAULT_BOOTSTRAP: unavailableBootstrap },
+    linkedBin
+  )
+
+  try {
+    await host.waitFor(/PEARS_VAULT_PUBLIC_KEY=[0-9a-f]{64}/, 2_000)
+    assert.match(host.output, /Starting vault storage and announcing on HyperDHT/)
+  } finally {
+    await host.stop()
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
 test('compiled CLI host and two joined peers synchronize live', { timeout: 45_000 }, async () => {
   const root = await mkdtemp(join(tmpdir(), 'pears-vault-cli-'))
   const bootstrapper = DHT.bootstrapper(await freeUdpPort(), '127.0.0.1')
@@ -71,6 +91,7 @@ test('compiled CLI host and two joined peers synchronize live', { timeout: 45_00
     const host = new CliProcess(['host', 'start', '--data-dir', join(root, 'host')], env)
     processes.push(host)
     const key = (await host.waitFor(/PEARS_VAULT_PUBLIC_KEY=([0-9a-f]{64})/))[1]
+    await host.waitFor(/Host is serving encrypted vault replication/)
 
     const first = new CliProcess(['join', key, '--data-dir', join(root, 'peer-1')], env)
     processes.push(first)

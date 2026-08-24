@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 /// <reference types="node" />
+import { realpathSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { createInterface } from 'node:readline'
 import process from 'node:process'
-import { pathToFileURL } from 'node:url'
+import { fileURLToPath } from 'node:url'
 import { startHost } from './host.js'
 import { joinVault, type VaultPeer } from './peer.js'
 import { parseBootstrap, parsePublicKey } from './validation.js'
@@ -121,7 +122,7 @@ export async function runCli(argv = process.argv.slice(2)): Promise<void> {
 
 function isEntryPoint(): boolean {
   try {
-    return Boolean(process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href)
+    return Boolean(process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url))
   } catch {
     return false
   }
