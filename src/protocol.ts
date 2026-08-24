@@ -1,5 +1,5 @@
 /// <reference types="node" />
-import { EventEmitter, once } from "node:events";
+import { EventEmitter } from "node:events";
 import type { Duplex } from "node:stream";
 
 export const CONTROL_CHANNEL = 1;
@@ -23,10 +23,22 @@ export async function waitForOpen(
 	stream: Duplex & { opened?: boolean },
 ): Promise<void> {
 	if (stream.opened) return;
-	await Promise.race([
-		once(stream, "open").then(() => undefined),
-		once(stream, "error").then(([error]) => Promise.reject(error)),
-	]);
+	await new Promise<void>((resolve, reject) => {
+		const cleanup = (): void => {
+			stream.off("open", onOpen);
+			stream.off("error", onError);
+		};
+		const onOpen = (): void => {
+			cleanup();
+			resolve();
+		};
+		const onError = (error: Error): void => {
+			cleanup();
+			reject(error);
+		};
+		stream.once("open", onOpen);
+		stream.once("error", onError);
+	});
 }
 
 export async function readChannel(stream: Duplex): Promise<number> {
