@@ -116,15 +116,18 @@ Unless `--data-dir` is supplied, peers use:
 
 Peer Hypercore storage remains in the peer data directory, but every CLI peer command (`join`, `add`, `list`, `get`, and `sync`) mirrors plaintext into `<project-root>/.env`. Supplying `--data-dir` changes storage only; it does not move the project `.env`.
 
-## `.env` propagation
+## Bidirectional `.env` synchronization
 
-- The host updates its own `.env` after accepting a write.
-- Every connected peer downloads each announced append, decrypts the changed value locally, and updates its own `.env` before reporting the live update.
-- A newly connected peer first downloads the full vault and mirrors every key/value into its `.env`.
-- Existing comments, blank lines, and unrelated variables are preserved.
-- Existing assignments are replaced by exact key name; duplicate assignments for that key are collapsed.
+- The host and long-lived peers watch their local `.env` approximately every two seconds.
+- Adding a `KEY=value` line or editing its value performs an authenticated vault upsert.
+- Removing a key that the vault manages deletes that secret from Hyperbee and removes it from every connected host/peer `.env`. `KEY=` remains an empty-string value and is not a deletion.
+- Every connected peer downloads each announced append or tombstone and updates its own `.env` before reporting the live update.
+- A newly connected peer first reconciles edits made since its last synchronized snapshot, then downloads and mirrors the full vault.
+- One-shot `add`, `list`, `get`, and `sync` commands reconcile pending project `.env` edits before performing their requested operation.
+- Snapshot metadata stores value hashes and managed key names, not a second plaintext copy.
+- Existing comments, blank lines, and unrelated variables are preserved. Duplicate assignments for a managed key are collapsed.
 - Values requiring quoting are JSON-escaped on one line.
-- Generated `.env` files use restrictive permissions and are ignored by Git.
+- Generated `.env` and snapshot files use restrictive permissions; `.env` is ignored by Git.
 
 The `.env` files intentionally contain plaintext values. Treat every project `.env`, host directory, and peer data directory as sensitive.
 
@@ -143,7 +146,7 @@ pears-vault list <public-key> --bootstrap 127.0.0.1:49737
 - The host persists a HyperDHT keypair, a random 256-bit vault key, and the canonical writable Hypercore/Hyperbee.
 - A persistent HyperDHT Noise SecretStream is multiplexed with Protomux for control RPC and native Hypercore replication.
 - Hypercore is single-writer. Peers encrypt values locally and submit versioned AES-256-GCM ciphertext envelopes to the host.
-- Peers maintain full disk-backed read-only replicas and verify that every announced block is locally available.
+- Peers maintain full disk-backed read-only replicas and verify that every announced block is locally available; local `.env` edits are sent to the canonical host as authenticated upsert/delete requests.
 - Replicated Hypercore/Hyperbee data remains ciphertext. Plaintext exists only in process memory and each node's intentional local `.env` mirror.
 - Secret names, update timing, and database size are visible metadata.
 
@@ -161,7 +164,7 @@ HyperDHT does not relay by default, so peers behind incompatible randomizing NAT
 npm run check
 ```
 
-Coverage includes encrypted persistence, complete peer bootstrap, live replication, host and peer `.env` propagation, merge/replace behavior, exact programmatic JSON output, bounded non-interactive commands, and existing interactive CLI behavior.
+Coverage includes encrypted persistence, complete peer bootstrap, live replication, bidirectional host/peer `.env` upserts and deletions, loop prevention through durable snapshots, one-shot reconciliation, exact programmatic JSON output, bounded commands, and existing interactive CLI behavior.
 
 ## Documentation followed
 

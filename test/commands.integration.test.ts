@@ -8,6 +8,7 @@ import { join } from 'node:path'
 import { test } from 'node:test'
 import DHT from 'hyperdht'
 import { runCli } from '../src/cli.js'
+import { removeDotEnv, updateDotEnv } from '../src/env.js'
 import { startHost } from '../src/host.js'
 
 async function getFreeUdpPort(): Promise<number> {
@@ -27,14 +28,16 @@ async function runJsonCommand(args: string[]): Promise<unknown> {
   const originalError = console.error
   console.log = (...values: unknown[]) => output.push(values.join(' '))
   console.error = () => undefined
+  let timer: NodeJS.Timeout | undefined
   try {
     await Promise.race([
       runCli(args),
       new Promise<never>((_resolve, reject) => {
-        setTimeout(() => reject(new Error('Non-interactive command hung on stdin')), 8_000)
+        timer = setTimeout(() => reject(new Error('Non-interactive command hung on stdin')), 8_000)
       })
     ])
   } finally {
+    if (timer) clearTimeout(timer)
     console.log = originalLog
     console.error = originalError
   }
@@ -87,8 +90,25 @@ test(
       })
 
       assert.match(await readFile(join(root, 'host', '.env'), 'utf8'), /^API_TOKEN=agent-secret$/m)
-      assert.match(await readFile(join(projectRoot, '.env'), 'utf8'), /^API_TOKEN=agent-secret$/m)
+      const projectEnv = join(projectRoot, '.env')
+      assert.match(await readFile(projectEnv, 'utf8'), /^API_TOKEN=agent-secret$/m)
       await assert.rejects(readFile(join(peerDataDir, '.env'), 'utf8'), { code: 'ENOENT' })
+
+      await updateDotEnv(projectEnv, 'ONE_SHOT_ENV', 'local-value')
+      assert.deepEqual(await runJsonCommand(['list', host.publicKey, ...common]), ['API_TOKEN', 'ONE_SHOT_ENV'])
+
+      await updateDotEnv(projectEnv, 'API_TOKEN', 'edited-locally')
+      assert.deepEqual(await runJsonCommand(['get', host.publicKey, 'API_TOKEN', ...common]), {
+        name: 'API_TOKEN',
+        value: 'edited-locally'
+      })
+
+      await removeDotEnv(projectEnv, 'API_TOKEN')
+      assert.deepEqual(await runJsonCommand(['list', host.publicKey, ...common]), ['ONE_SHOT_ENV'])
+      assert.deepEqual(await runJsonCommand(['get', host.publicKey, 'API_TOKEN', ...common]), {
+        name: 'API_TOKEN',
+        value: null
+      })
     } finally {
       process.chdir(originalCwd)
       await host?.close().catch(() => undefined)

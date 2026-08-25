@@ -10,6 +10,7 @@ import DHT from 'hyperdht'
 import Hypercore from 'hypercore'
 import Hyperbee from 'hyperbee'
 import { runCli } from '../src/cli.js'
+import { removeDotEnv, updateDotEnv } from '../src/env.js'
 import { startHost } from '../src/host.js'
 import { joinVault } from '../src/peer.js'
 
@@ -31,6 +32,19 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T
       setTimeout(() => reject(new Error('Timed out waiting for live peer update')), timeoutMs)
     })
   ])
+}
+
+async function waitForEnv(path: string, predicate: (content: string) => boolean, timeoutMs = 3_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    try {
+      if (predicate(await readFile(path, 'utf8'))) return
+    } catch {
+      // The mirror may not exist until the first synchronized write.
+    }
+    await new Promise(resolve => setTimeout(resolve, 25))
+  }
+  throw new Error(`Timed out waiting for env update at ${path}`)
 }
 
 function parseJson(value: string): Record<string, unknown> {
@@ -104,6 +118,68 @@ test('two peers write, read, and live-sync through a local HyperDHT', { timeout:
   const vaultKeyFile = await readFile(join(root, 'host', 'vault-key'), 'utf8')
   assert.match(vaultKeyFile, /^[0-9a-f]{64}$/)
   await rm(root, { recursive: true, force: true })
+})
+
+test('local env edits and deletions propagate through the vault', { timeout: 30_000 }, async () => {
+  const root = await mkdtemp(join(tmpdir(), 'pears-vault-bidirectional-env-'))
+  const bootstrapper = DHT.bootstrapper(await getFreeUdpPort(), '127.0.0.1')
+  let host: Awaited<ReturnType<typeof startHost>> | undefined
+  let first: Awaited<ReturnType<typeof joinVault>> | undefined
+  let second: Awaited<ReturnType<typeof joinVault>> | undefined
+
+  try {
+    await bootstrapper.fullyBootstrapped()
+    const bootstrap = [{ host: '127.0.0.1', port: bootstrapper.address().port }]
+    const hostDir = join(root, 'host')
+    const firstDir = join(root, 'peer-1')
+    const secondDir = join(root, 'peer-2')
+    const hostEnv = join(hostDir, '.env')
+    const firstEnv = join(firstDir, '.env')
+    const secondEnv = join(secondDir, '.env')
+
+    host = await startHost({ dataDir: hostDir, bootstrap, envPollIntervalMs: 50, log: () => undefined })
+    first = await joinVault(host.publicKey, { dataDir: firstDir, bootstrap, envPollIntervalMs: 50 })
+    second = await joinVault(host.publicKey, { dataDir: secondDir, bootstrap, envPollIntervalMs: 50 })
+
+    await updateDotEnv(firstEnv, 'FROM_PEER_ENV', 'one')
+    await waitForEnv(secondEnv, content => /^FROM_PEER_ENV=one$/m.test(content))
+    await waitForEnv(hostEnv, content => /^FROM_PEER_ENV=one$/m.test(content))
+    assert.equal(await second.get('FROM_PEER_ENV'), 'one')
+
+    await updateDotEnv(firstEnv, 'FROM_PEER_ENV', 'two')
+    await waitForEnv(secondEnv, content => /^FROM_PEER_ENV=two$/m.test(content))
+    assert.equal(await second.get('FROM_PEER_ENV'), 'two')
+
+    await removeDotEnv(firstEnv, 'FROM_PEER_ENV')
+    await waitForEnv(secondEnv, content => !/^FROM_PEER_ENV=/m.test(content))
+    await waitForEnv(hostEnv, content => !/^FROM_PEER_ENV=/m.test(content))
+    assert.equal(await second.get('FROM_PEER_ENV'), null)
+    assert.equal((await second.list()).includes('FROM_PEER_ENV'), false)
+
+    await updateDotEnv(hostEnv, 'FROM_HOST_ENV', 'host-value')
+    await waitForEnv(firstEnv, content => /^FROM_HOST_ENV=host-value$/m.test(content))
+    await waitForEnv(secondEnv, content => /^FROM_HOST_ENV=host-value$/m.test(content))
+
+    await removeDotEnv(hostEnv, 'FROM_HOST_ENV')
+    await waitForEnv(firstEnv, content => !/^FROM_HOST_ENV=/m.test(content))
+    await waitForEnv(secondEnv, content => !/^FROM_HOST_ENV=/m.test(content))
+    assert.equal(await first.get('FROM_HOST_ENV'), null)
+
+    await first.add('IDEMPOTENT', 'same-value')
+    const firstWriteLength = (await first.syncStatus()).remoteLength
+    await second.add('IDEMPOTENT', 'same-value')
+    assert.equal((await second.syncStatus()).remoteLength, firstWriteLength)
+
+    const stableLength = (await first.syncStatus()).remoteLength
+    await new Promise(resolve => setTimeout(resolve, 250))
+    assert.equal((await first.syncStatus()).remoteLength, stableLength)
+  } finally {
+    await first?.close().catch(() => undefined)
+    await second?.close().catch(() => undefined)
+    await host?.close().catch(() => undefined)
+    await bootstrapper.destroy().catch(() => undefined)
+    await rm(root, { recursive: true, force: true })
+  }
 })
 
 test(
