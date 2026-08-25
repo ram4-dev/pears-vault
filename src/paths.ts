@@ -14,6 +14,10 @@ function findProjectRoot(cwd: string): string {
   }
 }
 
+export function defaultHostEnvPath(cwd = process.cwd()): string {
+  return join(findProjectRoot(cwd), '.env')
+}
+
 export function defaultPeerDataDir(publicKey: string, cwd = process.cwd(), home = homedir()): string {
   const projectRoot = findProjectRoot(cwd)
   const identity = createHash('sha256').update(projectRoot).update('\0').update(publicKey).digest('hex').slice(0, 20)

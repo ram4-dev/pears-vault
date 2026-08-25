@@ -2,7 +2,7 @@
 /// <reference path="./vendor.d.ts" />
 import assert from 'node:assert/strict'
 import { createSocket } from 'node:dgram'
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
@@ -74,6 +74,16 @@ test('two peers write, read, and live-sync through a local HyperDHT', { timeout:
     await withTimeout(firstUpdated, 2_000)
     assert.deepEqual(await first.list(), ['alpha', 'beta'])
     assert.equal(await first.get('beta'), 'second-secret')
+
+    for (const envPath of [
+      join(root, 'host', '.env'),
+      join(root, 'peer-1', '.env'),
+      join(root, 'peer-2', '.env')
+    ]) {
+      const env = await readFile(envPath, 'utf8')
+      assert.match(env, /^alpha=first-secret$/m)
+      assert.match(env, /^beta=second-secret$/m)
+    }
   } finally {
     await first?.close().catch(() => undefined)
     await second?.close().catch(() => undefined)
@@ -121,6 +131,11 @@ test(
         dataDir: join(root, 'writer'),
         bootstrap
       })
+      await mkdir(peerDir, { recursive: true })
+      await writeFile(join(peerDir, '.env'), `# keep me
+UNRELATED=preserved
+beta=stale
+`, 'utf8')
       await writer.add('alpha', 'first-secret')
       await writer.add('beta', 'second-secret')
 
@@ -162,6 +177,14 @@ test(
       assert.equal(localBeta.value.includes('second-secret'), false)
       assert.equal(localGamma.value.includes('third-secret'), false)
       await localBee.close()
+
+      const replicaEnv = await readFile(join(peerDir, '.env'), 'utf8')
+      assert.match(replicaEnv, /^# keep me$/m)
+      assert.match(replicaEnv, /^UNRELATED=preserved$/m)
+      assert.match(replicaEnv, /^alpha=first-secret$/m)
+      assert.match(replicaEnv, /^beta=second-secret$/m)
+      assert.match(replicaEnv, /^gamma=third-secret$/m)
+      assert.equal(replicaEnv.match(/^beta=/gm)?.length, 1)
     } finally {
       await replica?.close().catch(() => undefined)
       await writer?.close().catch(() => undefined)

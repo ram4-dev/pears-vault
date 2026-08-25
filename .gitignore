@@ -10,3 +10,6 @@ coverage/
 
 # Local agent runtime state
 .atl/
+
+# Generated plaintext environment mirrors
+.env

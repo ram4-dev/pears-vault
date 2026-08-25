@@ -4,6 +4,7 @@ import DHT from 'hyperdht'
 import Hypercore from 'hypercore'
 import Hyperbee from 'hyperbee'
 import { decryptSecret, encryptSecret, validateEnvelope, validateVaultKey } from './crypto.js'
+import { ensureDotEnv, updateDotEnv } from './env.js'
 import { createMux, RpcClient, waitForOpen } from './protocol.js'
 import { ensureDataDir } from './storage.js'
 import { type BootstrapNode, parsePublicKey, validateSecretName } from './validation.js'
@@ -25,6 +26,7 @@ export interface VaultSyncStatus {
 
 export interface PeerOptions {
   dataDir: string
+  envPath?: string
   bootstrap?: BootstrapNode[]
   syncTimeoutMs?: number
   connectionTimeoutMs?: number
@@ -185,6 +187,8 @@ export async function joinVault(publicKeyHex: string, options: PeerOptions): Pro
   await ensureDataDir(options.dataDir)
   const dht = new DHT(options.bootstrap ? { bootstrap: options.bootstrap } : undefined)
   const timeoutMs = options.syncTimeoutMs ?? 15_000
+  const envPath = options.envPath ?? join(options.dataDir, '.env')
+  await ensureDotEnv(envPath)
 
   options.onConnectionStatus?.('Bootstrapping HyperDHT…')
   await dht.fullyBootstrapped()
@@ -208,6 +212,31 @@ export async function joinVault(publicKeyHex: string, options: PeerOptions): Pro
   })
   core.replicate(mux)
 
+  let envQueue: Promise<void> = Promise.resolve()
+  const serializeEnvUpdate = async (update: () => Promise<void>): Promise<void> => {
+    const current = envQueue.then(update)
+    envQueue = current.catch(() => undefined)
+    await current
+  }
+  const mirrorSecretToEnv = async (name: string): Promise<void> => {
+    await serializeEnvUpdate(async () => {
+      const node = await bee.get(name)
+      if (!node) return
+      const envelope = parseStoredEnvelope(node.value)
+      validateEnvelope(envelope)
+      await updateDotEnv(envPath, name, decryptSecret(name, envelope, vaultKey))
+    })
+  }
+  const mirrorAllSecretsToEnv = async (): Promise<void> => {
+    await serializeEnvUpdate(async () => {
+      for await (const node of bee.createReadStream()) {
+        const envelope = parseStoredEnvelope(node.value)
+        validateEnvelope(envelope)
+        await updateDotEnv(envPath, node.key, decryptSecret(node.key, envelope, vaultKey))
+      }
+    })
+  }
+
   let syncQueue: Promise<void> = Promise.resolve()
   let backgroundSyncError: Error | null = null
   let remoteLength = hello.length
@@ -224,6 +253,7 @@ export async function joinVault(publicKeyHex: string, options: PeerOptions): Pro
     syncQueue = syncQueue
       .then(async () => {
         await syncThrough(update.length)
+        await mirrorSecretToEnv(update.name)
         options.onUpdate?.(update)
       })
       .catch((error) => {
@@ -246,6 +276,7 @@ export async function joinVault(publicKeyHex: string, options: PeerOptions): Pro
   const replication = await rpc.request('replicate-ready')
   await syncThrough(parseLength(replication, 'replication receipt'))
   await bee.ready()
+  await mirrorAllSecretsToEnv()
 
   const syncStatus = async (): Promise<VaultSyncStatus> => {
     await syncQueue
@@ -254,6 +285,7 @@ export async function joinVault(publicKeyHex: string, options: PeerOptions): Pro
     await core.update()
     try {
       await syncThrough(remoteLength)
+      await mirrorAllSecretsToEnv()
     } catch (error) {
       backgroundSyncError = error instanceof Error ? error : new Error('Vault sync failed')
       options.onSyncError?.(backgroundSyncError)
@@ -277,6 +309,7 @@ export async function joinVault(publicKeyHex: string, options: PeerOptions): Pro
       const envelope = encryptSecret(name, value, vaultKey)
       const response = await rpc.request('put', { name, envelope })
       await syncThrough(parseLength(response, 'write receipt'))
+      await mirrorSecretToEnv(name)
     },
     list: async () => {
       await syncStatus()
@@ -296,6 +329,8 @@ export async function joinVault(publicKeyHex: string, options: PeerOptions): Pro
     syncStatus,
     close: async () => {
       connected = false
+      await syncQueue
+      await envQueue
       rpc.close()
       connection.destroy()
       await bee.close()

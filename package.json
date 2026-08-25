@@ -35,14 +35,12 @@
     "node": ">=22"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.30.0",
     "b4a": "^1.8.1",
     "compact-encoding": "^3.3.2",
     "hyperbee": "^2.27.3",
     "hypercore": "^11.35.2",
     "hyperdht": "^6.33.2",
-    "protomux": "^3.11.0",
-    "zod": "^3.25.76"
+    "protomux": "^3.11.0"
   },
   "devDependencies": {
     "@types/node": "^26.3.0",

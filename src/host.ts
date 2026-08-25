@@ -4,7 +4,8 @@ import b4a from 'b4a'
 import DHT from 'hyperdht'
 import Hypercore from 'hypercore'
 import Hyperbee from 'hyperbee'
-import { validateEnvelope } from './crypto.js'
+import { decryptSecret, validateEnvelope } from './crypto.js'
+import { ensureDotEnv, updateDotEnv } from './env.js'
 import { createMux, serveRpc, type RpcRequest, type RpcServer } from './protocol.js'
 import { ensureDataDir, loadOrCreateDhtKeyPair, loadOrCreateVaultKey } from './storage.js'
 import { type BootstrapNode, validateSecretName } from './validation.js'
@@ -12,6 +13,7 @@ import { type BootstrapNode, validateSecretName } from './validation.js'
 export interface HostOptions {
   dataDir: string
   bootstrap?: BootstrapNode[]
+  envPath?: string
   log?: (message: string) => void
 }
 
@@ -21,14 +23,19 @@ export interface VaultHost {
   close: () => Promise<void>
 }
 
-function serializeEnvelope(value: unknown): string {
-  validateEnvelope(value)
-  return JSON.stringify(value)
+function parseStoredEnvelope(value: string): unknown {
+  try {
+    return JSON.parse(value)
+  } catch {
+    throw new Error('Stored ciphertext envelope is corrupted')
+  }
 }
 
 export async function startHost(options: HostOptions): Promise<VaultHost> {
   const log = options.log ?? console.log
+  const envPath = options.envPath ?? join(options.dataDir, '.env')
   await ensureDataDir(options.dataDir)
+  await ensureDotEnv(envPath)
   const keyPair = await loadOrCreateDhtKeyPair(options.dataDir)
   const publicKey = b4a.toString(keyPair.publicKey, 'hex')
   log(`PEARS_VAULT_PUBLIC_KEY=${publicKey}`)
@@ -41,6 +48,11 @@ export async function startHost(options: HostOptions): Promise<VaultHost> {
     valueEncoding: 'utf-8'
   })
   await bee.ready()
+  for await (const node of bee.createReadStream()) {
+    const envelope = parseStoredEnvelope(node.value)
+    validateEnvelope(envelope)
+    await updateDotEnv(envPath, node.key, decryptSecret(node.key, envelope, vaultKey))
+  }
 
   const dht = new DHT(options.bootstrap ? { bootstrap: options.bootstrap } : undefined)
   const sockets = new Set<any>()
@@ -85,14 +97,18 @@ export async function startHost(options: HostOptions): Promise<VaultHost> {
 
       if (request.type === 'put') {
         validateSecretName(request.name)
-        const encoded = serializeEnvelope(request.envelope)
+        const name = request.name as string
+        validateEnvelope(request.envelope)
+        const encoded = JSON.stringify(request.envelope)
+        const plaintext = decryptSecret(name, request.envelope, vaultKey)
         writeQueue = writeQueue.then(async () => {
-          await bee.put(request.name, encoded)
+          await bee.put(name, encoded)
+          await updateDotEnv(envPath, name, plaintext)
           return core.length
         })
         const length = (await writeQueue) as number
-        broadcastUpdate(request.name, length)
-        return { name: request.name, length }
+        broadcastUpdate(name, length)
+        return { name, length }
       }
 
       throw new Error(`Unsupported request type: ${request.type}`)
@@ -111,6 +127,7 @@ export async function startHost(options: HostOptions): Promise<VaultHost> {
   await server.listen(keyPair)
   const coreKey = b4a.toString(core.key, 'hex')
   log(`Vault data: ${options.dataDir}`)
+  log(`Vault environment: ${envPath}`)
   log('Host is serving encrypted vault replication and peer write requests.')
 
   return {

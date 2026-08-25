@@ -7,8 +7,7 @@ import { createInterface } from 'node:readline'
 import process from 'node:process'
 import { fileURLToPath } from 'node:url'
 import { startHost } from './host.js'
-import { runVaultMcpServer } from './mcp.js'
-import { defaultPeerDataDir } from './paths.js'
+import { defaultHostEnvPath, defaultPeerDataDir } from './paths.js'
 import { joinVault, type VaultPeer } from './peer.js'
 import { parseBootstrap, parsePublicKey } from './validation.js'
 
@@ -19,9 +18,9 @@ Usage:
   pears-vault host start [--data-dir <path>] [--bootstrap <host:port,...>]
   pears-vault join <public-key> [--data-dir <path>] [--bootstrap <host:port,...>]
   pears-vault sync <public-key> [--data-dir <path>] [--bootstrap <host:port,...>]
-  pears-vault mcp [public-key] [--data-dir <path>] [--bootstrap <host:port,...>]
-
-The MCP public key may also be set with PEARS_VAULT_PUBLIC_KEY.
+  pears-vault add <public-key> <name> <value> [--data-dir <path>] [--bootstrap <host:port,...>]
+  pears-vault list <public-key> [--data-dir <path>] [--bootstrap <host:port,...>]
+  pears-vault get <public-key> <name> [--data-dir <path>] [--bootstrap <host:port,...>]
 
 Join commands:
   add <name> <value>   Encrypt and store a secret
@@ -97,6 +96,43 @@ async function runJoinRepl(peer: VaultPeer): Promise<void> {
   rl.close()
 }
 
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, context: string): Promise<T> {
+  let timer: NodeJS.Timeout | undefined
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error(`${context} timed out after ${timeoutMs}ms`)), timeoutMs)
+      })
+    ])
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
+}
+
+async function withProgrammaticPeer<T>(
+  publicKey: string,
+  dataDir: string,
+  bootstrap: ReturnType<typeof parseBootstrap>,
+  action: (peer: VaultPeer) => Promise<T>
+): Promise<T> {
+  const peer = await joinVault(publicKey, {
+    dataDir,
+    bootstrap,
+    connectionTimeoutMs: 20_000,
+    connectionAttemptTimeoutMs: 5_000,
+    connectionRetryDelayMs: 500,
+    syncTimeoutMs: 15_000,
+    onConnectionStatus: message => console.error(message),
+    onSyncError: error => console.error(`Sync error: ${error.message}`)
+  })
+  try {
+    return await withTimeout(action(peer), 15_000, 'Vault command')
+  } finally {
+    await peer.close()
+  }
+}
+
 export async function runCli(argv = process.argv.slice(2)): Promise<void> {
   const args = [...argv]
   const dataDirOption = takeOption(args, '--data-dir')
@@ -105,7 +141,8 @@ export async function runCli(argv = process.argv.slice(2)): Promise<void> {
 
   if (args[0] === 'host' && args[1] === 'start' && args.length === 2) {
     const dataDir = dataDirOption ?? join(homedir(), '.pears-vault', 'host')
-    const host = await startHost({ dataDir, bootstrap })
+    const envPath = dataDirOption ? join(dataDir, '.env') : defaultHostEnvPath()
+    const host = await startHost({ dataDir, envPath, bootstrap })
     await new Promise<void>((resolve) => {
       process.once('SIGINT', resolve)
       process.once('SIGTERM', resolve)
@@ -134,6 +171,39 @@ export async function runCli(argv = process.argv.slice(2)): Promise<void> {
     return
   }
 
+  if (args[0] === 'add' && args[1] && args[2] && args[3] !== undefined && args.length === 4) {
+    const publicKey = args[1]
+    parsePublicKey(publicKey)
+    const name = args[2]
+    const value = args[3]
+    const dataDir = dataDirOption ?? defaultPeerDataDir(publicKey)
+    const result = await withProgrammaticPeer(publicKey, dataDir, bootstrap, async peer => {
+      await peer.add(name, value)
+      return { ok: true, name }
+    })
+    console.log(JSON.stringify(result))
+    return
+  }
+
+  if (args[0] === 'list' && args[1] && args.length === 2) {
+    const publicKey = args[1]
+    parsePublicKey(publicKey)
+    const dataDir = dataDirOption ?? defaultPeerDataDir(publicKey)
+    const names = await withProgrammaticPeer(publicKey, dataDir, bootstrap, peer => peer.list())
+    console.log(JSON.stringify(names))
+    return
+  }
+
+  if (args[0] === 'get' && args[1] && args[2] && args.length === 3) {
+    const publicKey = args[1]
+    parsePublicKey(publicKey)
+    const name = args[2]
+    const dataDir = dataDirOption ?? defaultPeerDataDir(publicKey)
+    const value = await withProgrammaticPeer(publicKey, dataDir, bootstrap, peer => peer.get(name))
+    console.log(JSON.stringify({ name, value }))
+    return
+  }
+
   if (args[0] === 'sync' && args[1] && args.length === 2) {
     const publicKey = args[1]
     parsePublicKey(publicKey)
@@ -149,22 +219,6 @@ export async function runCli(argv = process.argv.slice(2)): Promise<void> {
     } finally {
       await peer.close()
     }
-    return
-  }
-
-  if (args[0] === 'mcp' && args.length <= 2) {
-    const publicKey = args[1] ?? process.env.PEARS_VAULT_PUBLIC_KEY
-    if (!publicKey) {
-      throw new Error('pears-vault mcp requires a public key argument or PEARS_VAULT_PUBLIC_KEY')
-    }
-    parsePublicKey(publicKey)
-    const dataDir = dataDirOption ?? defaultPeerDataDir(publicKey)
-    await runVaultMcpServer(publicKey, {
-      dataDir,
-      bootstrap,
-      onConnectionStatus: (message) => console.error(message),
-      onSyncError: (error) => console.error(`Live sync error: ${error.message}`)
-    })
     return
   }
 
