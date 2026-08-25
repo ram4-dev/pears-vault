@@ -118,6 +118,7 @@ async function withProgrammaticPeer<T>(
 ): Promise<T> {
   const peer = await joinVault(publicKey, {
     dataDir,
+    envPath: defaultHostEnvPath(),
     bootstrap,
     connectionTimeoutMs: 20_000,
     connectionAttemptTimeoutMs: 5_000,
@@ -157,6 +158,7 @@ export async function runCli(argv = process.argv.slice(2)): Promise<void> {
     const dataDir = dataDirOption ?? defaultPeerDataDir(publicKey)
     const peer = await joinVault(publicKey, {
       dataDir,
+      envPath: defaultHostEnvPath(),
       bootstrap,
       onConnectionStatus: (message) => console.log(message),
       onUpdate: ({ name }) => console.log(`Vault updated: ${name}`),
@@ -210,6 +212,7 @@ export async function runCli(argv = process.argv.slice(2)): Promise<void> {
     const dataDir = dataDirOption ?? defaultPeerDataDir(publicKey)
     const peer = await joinVault(publicKey, {
       dataDir,
+      envPath: defaultHostEnvPath(),
       bootstrap,
       onConnectionStatus: (message) => console.error(message),
       onSyncError: (error) => console.error(`Sync error: ${error.message}`)

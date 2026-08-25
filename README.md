@@ -106,7 +106,7 @@ The peer remains connected and prints `Vault updated: <name>` after a live updat
 pears-vault sync <public-key>
 ```
 
-This downloads every existing Hypercore block, updates `<peer-data-dir>/.env`, prints JSON synchronization status, and exits.
+This downloads every existing Hypercore block, updates `<project-root>/.env` (nearest Git root, with cwd fallback), prints JSON synchronization status, and exits.
 
 Unless `--data-dir` is supplied, peers use:
 
@@ -114,7 +114,7 @@ Unless `--data-dir` is supplied, peers use:
 ~/.pears-vault/peers/<project-or-cwd-and-vault-hash>
 ```
 
-Each peer's plaintext environment mirror is `<peer-data-dir>/.env`.
+Peer Hypercore storage remains in the peer data directory, but every CLI peer command (`join`, `add`, `list`, `get`, and `sync`) mirrors plaintext into `<project-root>/.env`. Supplying `--data-dir` changes storage only; it does not move the project `.env`.
 
 ## `.env` propagation
 
@@ -126,7 +126,7 @@ Each peer's plaintext environment mirror is `<peer-data-dir>/.env`.
 - Values requiring quoting are JSON-escaped on one line.
 - Generated `.env` files use restrictive permissions and are ignored by Git.
 
-The `.env` files intentionally contain plaintext values. Treat every host and peer data directory as sensitive.
+The `.env` files intentionally contain plaintext values. Treat every project `.env`, host directory, and peer data directory as sensitive.
 
 ## Network options
 

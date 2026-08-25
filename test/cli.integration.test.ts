@@ -2,7 +2,7 @@
 /// <reference path="./vendor.d.ts" />
 import assert from 'node:assert/strict'
 import { createSocket } from 'node:dgram'
-import { mkdtemp, rm, symlink } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, symlink } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
@@ -80,11 +80,16 @@ test('linked CLI prints its public key before DHT announcement completes', { tim
 
 test('compiled CLI host and joined peer stay live', { timeout: 45_000 }, async () => {
   const root = await mkdtemp(join(tmpdir(), 'pears-vault-cli-'))
+  const projectRoot = join(root, 'project')
+  const nestedCwd = join(projectRoot, 'packages', 'app')
+  const peerDataDir = join(root, 'peer-1')
   const bootstrapper = DHT.bootstrapper(await freeUdpPort(), '127.0.0.1')
   const processes: CliProcess[] = []
   let persistentNode: any
 
   try {
+    await mkdir(join(projectRoot, '.git'), { recursive: true })
+    await mkdir(nestedCwd, { recursive: true })
     await bootstrapper.fullyBootstrapped()
     const address = { host: '127.0.0.1', port: bootstrapper.address().port }
     persistentNode = new DHT({ bootstrap: [address], ephemeral: false })
@@ -97,12 +102,22 @@ test('compiled CLI host and joined peer stay live', { timeout: 45_000 }, async (
     const key = (await host.waitFor(/PEARS_VAULT_PUBLIC_KEY=([0-9a-f]{64})/))[1]
     await host.waitFor(/Host is serving encrypted vault replication/)
 
-    const first = new CliProcess(['join', key, '--data-dir', join(root, 'peer-1')], env)
+    const compiledCli = resolve('dist/cli.js')
+    const originalCwd = process.cwd()
+    let first: CliProcess
+    try {
+      process.chdir(nestedCwd)
+      first = new CliProcess([compiledCli, 'join', key, '--data-dir', peerDataDir], env, process.execPath)
+    } finally {
+      process.chdir(originalCwd)
+    }
     processes.push(first)
     await first.waitFor(/Connected to vault/)
     first.send('add alpha first-secret')
     await first.waitFor(/Added: alpha/)
     await first.waitFor(/Vault updated: alpha/)
+    assert.match(await readFile(join(projectRoot, '.env'), 'utf8'), /^alpha=first-secret$/m)
+    await assert.rejects(readFile(join(peerDataDir, '.env'), 'utf8'), { code: 'ENOENT' })
     first.send('list')
     await first.waitFor(/alpha/)
     first.send('get alpha')

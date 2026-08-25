@@ -202,6 +202,9 @@ test(
   },
   async () => {
     const root = await mkdtemp(join(tmpdir(), 'pears-vault-sync-command-'))
+    const originalCwd = process.cwd()
+    const projectRoot = join(root, 'project')
+    const nestedCwd = join(projectRoot, 'nested')
     const bootstrapper = DHT.bootstrapper(await getFreeUdpPort(), '127.0.0.1')
     let host: Awaited<ReturnType<typeof startHost>> | undefined
     let writer: Awaited<ReturnType<typeof joinVault>> | undefined
@@ -211,6 +214,9 @@ test(
     const originalError = console.error
 
     try {
+      await mkdir(join(projectRoot, '.git'), { recursive: true })
+      await mkdir(nestedCwd, { recursive: true })
+      process.chdir(nestedCwd)
       await bootstrapper.fullyBootstrapped()
       const port = bootstrapper.address().port
       const bootstrap = [{ host: '127.0.0.1', port }]
@@ -234,11 +240,14 @@ test(
       const status = JSON.parse(output.at(-1) ?? '{}') as Record<string, unknown>
       assert.equal(status.fullySynced, true)
       assert.equal(status.dataDir, peerDir)
+      assert.match(await readFile(join(projectRoot, '.env'), 'utf8'), /^alpha=first-secret$/m)
+      await assert.rejects(readFile(join(peerDir, '.env'), 'utf8'), { code: 'ENOENT' })
       assert.equal(
         errors.some((line) => line.includes('Sync error')),
         false
       )
     } finally {
+      process.chdir(originalCwd)
       console.log = originalLog
       console.error = originalError
       await writer?.close().catch(() => undefined)

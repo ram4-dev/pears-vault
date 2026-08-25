@@ -2,7 +2,7 @@
 /// <reference path="./vendor.d.ts" />
 import assert from 'node:assert/strict'
 import { createSocket } from 'node:dgram'
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
@@ -53,14 +53,21 @@ test(
   },
   async () => {
     const root = await mkdtemp(join(tmpdir(), 'pears-vault-commands-'))
+    const originalCwd = process.cwd()
+    const projectRoot = join(root, 'project')
+    const nestedCwd = join(projectRoot, 'packages', 'app')
+    const peerDataDir = join(root, 'hidden-peer-data')
     const bootstrapper = DHT.bootstrapper(await getFreeUdpPort(), '127.0.0.1')
     let host: Awaited<ReturnType<typeof startHost>> | undefined
 
     try {
+      await mkdir(join(projectRoot, '.git'), { recursive: true })
+      await mkdir(nestedCwd, { recursive: true })
+      process.chdir(nestedCwd)
       await bootstrapper.fullyBootstrapped()
       const port = bootstrapper.address().port
       const bootstrap = [{ host: '127.0.0.1', port }]
-      const common = ['--data-dir', join(root, 'peer'), '--bootstrap', `127.0.0.1:${port}`]
+      const common = ['--data-dir', peerDataDir, '--bootstrap', `127.0.0.1:${port}`]
       host = await startHost({
         dataDir: join(root, 'host'),
         bootstrap,
@@ -80,8 +87,10 @@ test(
       })
 
       assert.match(await readFile(join(root, 'host', '.env'), 'utf8'), /^API_TOKEN=agent-secret$/m)
-      assert.match(await readFile(join(root, 'peer', '.env'), 'utf8'), /^API_TOKEN=agent-secret$/m)
+      assert.match(await readFile(join(projectRoot, '.env'), 'utf8'), /^API_TOKEN=agent-secret$/m)
+      await assert.rejects(readFile(join(peerDataDir, '.env'), 'utf8'), { code: 'ENOENT' })
     } finally {
+      process.chdir(originalCwd)
       await host?.close().catch(() => undefined)
       await bootstrapper.destroy().catch(() => undefined)
       await rm(root, { recursive: true, force: true })
