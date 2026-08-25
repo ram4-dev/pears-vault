@@ -13,10 +13,24 @@ export interface VaultUpdate {
   length: number
 }
 
+export interface VaultSyncStatus {
+  connected: boolean
+  dataDir: string
+  localLength: number
+  remoteLength: number
+  fullySynced: boolean
+  lastSyncedAt: string | null
+  lastError: string | null
+}
+
 export interface PeerOptions {
   dataDir: string
   bootstrap?: BootstrapNode[]
   syncTimeoutMs?: number
+  connectionTimeoutMs?: number
+  connectionAttemptTimeoutMs?: number
+  connectionRetryDelayMs?: number
+  onConnectionStatus?: (message: string) => void
   onUpdate?: (update: VaultUpdate) => void
   onSyncError?: (error: Error) => void
 }
@@ -32,6 +46,7 @@ export interface VaultPeer {
   add: (name: string, value: string) => Promise<void>
   list: () => Promise<string[]>
   get: (name: string) => Promise<string | null>
+  syncStatus: () => Promise<VaultSyncStatus>
   close: () => Promise<void>
 }
 
@@ -41,7 +56,8 @@ function parseHello(value: unknown): HelloResponse {
   if (hello.protocol !== 1) throw new Error('Host uses an unsupported protocol version')
   if (typeof hello.coreKey !== 'string') throw new Error('Host returned an invalid Hypercore key')
   if (typeof hello.vaultKey !== 'string') throw new Error('Host returned an invalid vault key')
-  if (!Number.isInteger(hello.length) || (hello.length as number) < 0) throw new Error('Host returned an invalid core length')
+  if (!Number.isInteger(hello.length) || (hello.length as number) < 0)
+    throw new Error('Host returned an invalid core length')
   parsePublicKey(hello.coreKey)
   const vaultKey = Buffer.from(hello.vaultKey, 'hex')
   validateVaultKey(vaultKey)
@@ -96,14 +112,72 @@ async function waitForLength(core: any, expected: number, timeoutMs: number): Pr
       }, remaining)
 
       core.once('append', onAppend)
-      core.update().then(() => {
-        if (core.length >= expected) onAppend()
-      }, (error: Error) => {
-        cleanup()
-        reject(error)
-      })
+      core.update().then(
+        () => {
+          if (core.length >= expected) onAppend()
+        },
+        (error: Error) => {
+          cleanup()
+          reject(error)
+        }
+      )
     })
   }
+}
+
+async function downloadLocalCopy(core: any, expected: number, timeoutMs: number): Promise<void> {
+  await waitForLength(core, expected, timeoutMs)
+  if (expected === 0) return
+  const range = core.download({ start: 0, end: expected })
+  let timer: NodeJS.Timeout | undefined
+  try {
+    await Promise.race([
+      range.done(),
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(
+          () => reject(new Error(`Timed out downloading local vault copy through block ${expected}`)),
+          timeoutMs
+        )
+      })
+    ])
+  } catch (error) {
+    range.destroy()
+    throw error
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
+  if (!(await core.has(0, expected))) {
+    throw new Error(`Local vault copy is incomplete through block ${expected}`)
+  }
+}
+
+async function connectWithRetry(dht: any, publicKey: Buffer, options: PeerOptions): Promise<any> {
+  const totalTimeoutMs = options.connectionTimeoutMs ?? 45_000
+  const attemptTimeoutMs = options.connectionAttemptTimeoutMs ?? 10_000
+  const retryDelayMs = options.connectionRetryDelayMs ?? 1_000
+  const deadline = Date.now() + totalTimeoutMs
+  let attempt = 0
+  let lastError = 'connection timed out'
+
+  while (Date.now() < deadline) {
+    attempt++
+    options.onConnectionStatus?.(`Connecting to vault (attempt ${attempt})…`)
+    const connection = dht.connect(publicKey)
+    try {
+      await waitForOpen(connection, Math.min(attemptTimeoutMs, deadline - Date.now()))
+      return connection
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : 'connection failed'
+      connection.destroy()
+      if (Date.now() + retryDelayMs >= deadline) break
+      options.onConnectionStatus?.(`Host not reachable yet; retrying in ${retryDelayMs}ms…`)
+      await new Promise((resolve) => setTimeout(resolve, retryDelayMs))
+    }
+  }
+
+  throw new Error(
+    `Unable to reach the vault host after ${attempt} attempts. Keep 'pears-vault host start' running and wait for 'Host is serving...' before joining. Verify both peers use the same --bootstrap setting. Last error: ${lastError}`
+  )
 }
 
 export async function joinVault(publicKeyHex: string, options: PeerOptions): Promise<VaultPeer> {
@@ -112,8 +186,15 @@ export async function joinVault(publicKeyHex: string, options: PeerOptions): Pro
   const dht = new DHT(options.bootstrap ? { bootstrap: options.bootstrap } : undefined)
   const timeoutMs = options.syncTimeoutMs ?? 15_000
 
-  const connection = dht.connect(publicKey)
-  await waitForOpen(connection)
+  options.onConnectionStatus?.('Bootstrapping HyperDHT…')
+  await dht.fullyBootstrapped()
+  let connection: any
+  try {
+    connection = await connectWithRetry(dht, publicKey, options)
+  } catch (error) {
+    await dht.destroy()
+    throw error
+  }
   const mux = createMux(connection)
   const rpc = new RpcClient(mux, connection)
   const hello = parseHello(await rpc.request('hello'))
@@ -121,18 +202,31 @@ export async function joinVault(publicKeyHex: string, options: PeerOptions): Pro
 
   const core = new Hypercore(join(options.dataDir, 'hypercore'), Buffer.from(hello.coreKey, 'hex'))
   await core.ready()
-  const bee = new Hyperbee(core, { keyEncoding: 'utf-8', valueEncoding: 'utf-8' })
+  const bee = new Hyperbee(core, {
+    keyEncoding: 'utf-8',
+    valueEncoding: 'utf-8'
+  })
   core.replicate(mux)
 
   let syncQueue: Promise<void> = Promise.resolve()
   let backgroundSyncError: Error | null = null
+  let remoteLength = hello.length
+  let lastSyncedAt: string | null = null
+  let connected = true
+  const syncThrough = async (expected: number): Promise<void> => {
+    remoteLength = Math.max(remoteLength, expected)
+    await downloadLocalCopy(core, remoteLength, timeoutMs)
+    backgroundSyncError = null
+    lastSyncedAt = new Date().toISOString()
+  }
   const scheduleSync = (update: VaultUpdate): void => {
+    remoteLength = Math.max(remoteLength, update.length)
     syncQueue = syncQueue
       .then(async () => {
-        await waitForLength(core, update.length, timeoutMs)
+        await syncThrough(update.length)
         options.onUpdate?.(update)
       })
-      .catch(error => {
+      .catch((error) => {
         backgroundSyncError = error instanceof Error ? error : new Error('Background vault sync failed')
         options.onSyncError?.(backgroundSyncError)
       })
@@ -150,14 +244,31 @@ export async function joinVault(publicKeyHex: string, options: PeerOptions): Pro
   })
 
   const replication = await rpc.request('replicate-ready')
-  await waitForLength(core, parseLength(replication, 'replication receipt'), timeoutMs)
+  await syncThrough(parseLength(replication, 'replication receipt'))
   await bee.ready()
 
-  const sync = async (expected = core.length): Promise<void> => {
+  const syncStatus = async (): Promise<VaultSyncStatus> => {
     await syncQueue
-    if (backgroundSyncError) throw backgroundSyncError
+    const statusResponse = await rpc.request('status')
+    remoteLength = Math.max(remoteLength, parseLength(statusResponse, 'sync status'))
     await core.update()
-    await waitForLength(core, expected, timeoutMs)
+    try {
+      await syncThrough(remoteLength)
+    } catch (error) {
+      backgroundSyncError = error instanceof Error ? error : new Error('Vault sync failed')
+      options.onSyncError?.(backgroundSyncError)
+      throw backgroundSyncError
+    }
+    const fullySynced = core.length >= remoteLength && (remoteLength === 0 || (await core.has(0, remoteLength)))
+    return {
+      connected,
+      dataDir: options.dataDir,
+      localLength: core.length,
+      remoteLength,
+      fullySynced,
+      lastSyncedAt,
+      lastError: backgroundSyncError?.message ?? null
+    }
   }
 
   return {
@@ -165,24 +276,26 @@ export async function joinVault(publicKeyHex: string, options: PeerOptions): Pro
       validateSecretName(name)
       const envelope = encryptSecret(name, value, vaultKey)
       const response = await rpc.request('put', { name, envelope })
-      await sync(parseLength(response, 'write receipt'))
+      await syncThrough(parseLength(response, 'write receipt'))
     },
     list: async () => {
-      await sync()
+      await syncStatus()
       const names: string[] = []
       for await (const node of bee.createReadStream()) names.push(node.key)
       return names
     },
-    get: async name => {
+    get: async (name) => {
       validateSecretName(name)
-      await sync()
+      await syncStatus()
       const node = await bee.get(name)
       if (!node) return null
       const envelope = parseStoredEnvelope(node.value)
       validateEnvelope(envelope)
       return decryptSecret(name, envelope, vaultKey)
     },
+    syncStatus,
     close: async () => {
+      connected = false
       rpc.close()
       connection.destroy()
       await bee.close()

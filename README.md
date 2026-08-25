@@ -1,6 +1,6 @@
 # PEARS VAULT
 
-PEARS VAULT M1 is a CLI-first peer-to-peer secret vault built with Pear Runtime primitives. A host owns one persistent Hypercore/Hyperbee database; peers keep a long-lived HyperDHT connection open, replicate the database live, and can submit encrypted writes.
+PEARS VAULT M2 is a CLI-first peer-to-peer secret vault built with Pear Runtime primitives. A host owns one persistent Hypercore/Hyperbee database; CLI and MCP peers keep a long-lived HyperDHT connection open, persist a complete encrypted local copy, and apply live updates without reconnecting.
 
 ## Install
 
@@ -10,9 +10,9 @@ npm run build
 npm link
 ```
 
-Node.js 22+ is supported. The runtime dependencies (`hyperdht`, `hypercore`, `hyperbee`, and `b4a`) are the same modules used by Pear Terminal applications.
+Node.js 22+ is supported. The runtime uses `hyperdht`, `hypercore`, `hyperbee`, `protomux`, `compact-encoding`, `b4a`, and `@modelcontextprotocol/sdk`.
 
-## Usage
+## Host and interactive CLI
 
 Start the host:
 
@@ -20,19 +20,21 @@ Start the host:
 pears-vault host start
 ```
 
-The host prints a 64-character value such as:
+The host prints a 64-character share code immediately:
 
 ```text
 PEARS_VAULT_PUBLIC_KEY=<share-code>
 ```
 
-Join from another machine or terminal:
+Keep that process running and wait for `Host is serving encrypted vault replication and peer write requests.` before connecting. The key exists before its DHT announcement is reachable.
+
+Join interactively:
 
 ```bash
 pears-vault join <share-code>
 ```
 
-The joined peer provides a long-lived interactive prompt. It remains connected and prints `Vault updated: <name>` whenever any connected peer changes the vault:
+The interactive CLI remains connected and supports:
 
 ```text
 add github.token ghp_example
@@ -41,43 +43,117 @@ get github.token
 exit
 ```
 
-Use separate storage directories when running multiple peers on one machine:
+`join` waits for DHT bootstrap and makes bounded connection retries. If it cannot connect, verify host readiness and that both processes use the same `--bootstrap` setting.
+
+## Persistent local peer copy
+
+Every peer uses a disk-backed read-only replica of the host Hypercore/Hyperbee. On first connection it downloads every existing block before reporting synchronization complete. While connected, each host append is downloaded and persisted automatically.
+
+Unless `--data-dir` is supplied, peer storage is isolated under:
+
+```text
+~/.pears-vault/peers/<project-or-cwd-and-vault-hash>
+```
+
+The hash binds the nearest Git repository root (or current directory) and host public key, preventing unrelated projects or vaults from sharing storage.
+
+Run a one-shot full synchronization and print JSON status:
+
+```bash
+pears-vault sync <share-code>
+```
+
+The status includes the local data directory, local and remote Hypercore lengths, whether every block is present, and the last successful synchronization time.
+
+## MCP server
+
+Start the persistent stdio MCP server with the host public key:
+
+```bash
+pears-vault mcp <share-code>
+```
+
+Or provide the key through the environment, which is convenient for MCP client configuration:
+
+```bash
+PEARS_VAULT_PUBLIC_KEY=<share-code> pears-vault mcp
+```
+
+Example MCP client configuration:
+
+```json
+{
+  "mcpServers": {
+    "pears-vault": {
+      "command": "pears-vault",
+      "args": ["mcp"],
+      "env": {
+        "PEARS_VAULT_PUBLIC_KEY": "<share-code>"
+      }
+    }
+  }
+}
+```
+
+The stdio server keeps one persistent vault peer alive and exposes exactly these tools:
+
+- `add_secret(name, value)` — encrypt and store a value.
+- `list_secrets()` — return secret key names only.
+- `sync_status()` — synchronize the encrypted local copy and return status.
+
+**There is intentionally no MCP tool for reading secret values.** The MCP layer never returns a stored secret value. Interactive CLI `get` remains available for a human-operated peer.
+
+MCP protocol messages use stdout; connection and sync diagnostics use stderr so they cannot corrupt the stdio transport.
+
+## Network options
+
+Use explicit storage or bootstrap settings when needed:
 
 ```bash
 pears-vault host start --data-dir /tmp/vault-host
 pears-vault join <share-code> --data-dir /tmp/vault-peer
+pears-vault sync <share-code> --bootstrap 127.0.0.1:49737
+pears-vault mcp <share-code> --bootstrap 127.0.0.1:49737
 ```
 
-By default, data is stored under `~/.pears-vault`. To use an isolated DHT bootstrap node (for a LAN or test network), pass `--bootstrap host:port` or set `PEARS_VAULT_BOOTSTRAP=host:port`. Without that option HyperDHT uses its public bootstrap network and attempts direct hole punching.
+`PEARS_VAULT_BOOTSTRAP=host:port` is equivalent to `--bootstrap`. Without it HyperDHT uses its public bootstrap network and attempts direct hole punching.
 
 ## Architecture
 
-- `host start` persists a HyperDHT keypair, a random 256-bit vault key, and a writer-owned Hypercore/Hyperbee.
-- `join` uses `dht.connect(hostPublicKey)`. HyperDHT wraps each connection in Noise SecretStream encryption and performs hole punching where the network permits it.
-- One persistent HyperDHT SecretStream is multiplexed with Protomux. Its control channel returns the Hypercore read capability and vault key, accepts ciphertext writes, and broadcasts update notifications.
-- Native Hypercore replication attaches to the same Protomux connection and remains open. Peers listen for Hypercore `append` events and synchronize each announced length in the background.
-- Hypercore is single-writer. Peers encrypt values locally, send only versioned AES-256-GCM envelopes to the host, and the host appends those ciphertext envelopes to Hyperbee. The replicated Hypercore therefore contains no plaintext secret values.
+- `host start` persists a HyperDHT keypair, a random 256-bit vault key, and the canonical writable Hypercore/Hyperbee.
+- One persistent HyperDHT Noise SecretStream is multiplexed with Protomux for control RPC and native Hypercore replication.
+- Hypercore is single-writer. Peers encrypt values locally and send versioned AES-256-GCM ciphertext envelopes to the host writer.
+- Peers open a disk-backed read-only Hypercore with the host core key. Initial synchronization downloads the complete finite range; live update notifications trigger downloads through each announced append length.
+- `join`, `sync`, and `mcp` share the same persistent peer implementation and local-copy guarantees.
 - Secret names are visible metadata. Values use a fresh 96-bit IV, a 128-bit authentication tag, and the secret name as AES-GCM additional authenticated data.
 
-## Security model and M0 limitations
+## Security model and current limitations
 
-The 32-byte HyperDHT public key acts as the M0 invitation capability: anyone who has it can connect and receive the vault read/write capability while the host is online. There is no per-peer approval, revocation, role separation, relay fallback, recovery phrase, or key rotation yet. Do not publish the share code.
+The 32-byte HyperDHT public key is an invitation capability: anyone who has it can connect and receive the vault read/write capability while the host is online. There is no per-peer approval, revocation, role separation, relay fallback, recovery phrase, or key rotation yet. Do not publish the share code.
 
-The vault key is delivered inside HyperDHT's authenticated encrypted connection. Secret values are additionally encrypted before write RPC and remain ciphertext in Hyperbee and Hypercore replication. Secret names, update timing, and database size are not hidden. The host must remain online for peer writes because it is the canonical Hypercore writer; already-replicated reads remain persisted locally.
+The vault key is delivered only inside HyperDHT's authenticated encrypted connection. Secret values remain ciphertext in host and peer Hyperbee/Hypercore storage. Secret names, update timing, and database size are not hidden. The host must remain online for writes because it is the canonical Hypercore writer.
 
-HyperDHT does not relay by default, so two peers behind incompatible randomizing NATs may require a future relay mechanism.
+The MCP API is deliberately narrower than the interactive CLI: agents can add values, list names, and inspect sync status, but cannot retrieve secret values. HyperDHT does not relay by default, so peers behind incompatible randomizing NATs may require a future relay mechanism.
 
 ## Tests
 
 ```bash
-npm run build
-npm test
+npm run check
 ```
 
-The integration test starts an isolated local HyperDHT bootstrap, one host and two independent long-lived peers. It verifies peer A writes, peer B reads, peer B writes, peer A receives the background live-update callback before issuing another command, and persisted Hyperbee values do not contain the plaintext. The compiled CLI test separately verifies that peer A prints `Vault updated: beta` while it remains connected.
+Integration coverage verifies:
 
-## Pear documentation followed
+- two connected peers exchange writes and receive live updates;
+- a new peer downloads all pre-existing encrypted key-values;
+- later appends persist into that peer's offline local copy;
+- the one-shot CLI sync command reports a complete local copy;
+- the MCP stdio server exposes only `add_secret`, `list_secrets`, and `sync_status`;
+- MCP list results never contain secret values;
+- persisted Hyperbee values contain ciphertext, not plaintext.
 
-- [Connect two peers by key with HyperDHT](https://docs.pears.com/how-to/connect-to-peers/connect-two-peers-by-key-with-hyperdht/): `DHT.keyPair()`, `server.listen(keyPair)`, `dht.connect(publicKey)`, encrypted direct connections, and hole punching.
-- [Replicate and persist with Hypercore](https://docs.pears.com/how-to/store-and-replicate/replicate-and-persist-with-hypercore/): disk-backed writer and reader cores, `core.key`, `core.update()`, and `core.replicate(stream)` for live replication.
-- [Share append-only databases with Hyperbee](https://docs.pears.com/how-to/store-and-replicate/share-append-only-databases-with-hyperbee/): Hyperbee on a Hypercore with matching key/value encodings and reader-side queries over a replicated core.
+## Documentation followed
+
+- [Connect two peers by key with HyperDHT](https://docs.pears.com/how-to/connect-to-peers/connect-two-peers-by-key-with-hyperdht/)
+- [Replicate and persist with Hypercore](https://docs.pears.com/how-to/store-and-replicate/replicate-and-persist-with-hypercore/)
+- [Share append-only databases with Hyperbee](https://docs.pears.com/how-to/store-and-replicate/share-append-only-databases-with-hyperbee/)
+- [MCP TypeScript SDK server documentation](https://github.com/modelcontextprotocol/typescript-sdk/blob/v1.29.0/docs/server.md)

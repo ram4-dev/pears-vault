@@ -36,7 +36,10 @@ export async function startHost(options: HostOptions): Promise<VaultHost> {
   const vaultKey = await loadOrCreateVaultKey(options.dataDir)
 
   const core = new Hypercore(join(options.dataDir, 'hypercore'))
-  const bee = new Hyperbee(core, { keyEncoding: 'utf-8', valueEncoding: 'utf-8' })
+  const bee = new Hyperbee(core, {
+    keyEncoding: 'utf-8',
+    valueEncoding: 'utf-8'
+  })
   await bee.ready()
 
   const dht = new DHT(options.bootstrap ? { bootstrap: options.bootstrap } : undefined)
@@ -76,6 +79,10 @@ export async function startHost(options: HostOptions): Promise<VaultHost> {
         return { length: core.length }
       }
 
+      if (request.type === 'status') {
+        return { length: core.length }
+      }
+
       if (request.type === 'put') {
         validateSecretName(request.name)
         const encoded = serializeEnvelope(request.envelope)
@@ -83,7 +90,7 @@ export async function startHost(options: HostOptions): Promise<VaultHost> {
           await bee.put(request.name, encoded)
           return core.length
         })
-        const length = await writeQueue as number
+        const length = (await writeQueue) as number
         broadcastUpdate(request.name, length)
         return { name: request.name, length }
       }

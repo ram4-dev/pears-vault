@@ -7,15 +7,21 @@ import { createInterface } from 'node:readline'
 import process from 'node:process'
 import { fileURLToPath } from 'node:url'
 import { startHost } from './host.js'
+import { runVaultMcpServer } from './mcp.js'
+import { defaultPeerDataDir } from './paths.js'
 import { joinVault, type VaultPeer } from './peer.js'
 import { parseBootstrap, parsePublicKey } from './validation.js'
 
 function usage(): string {
-  return `PEARS VAULT M0
+  return `PEARS VAULT M2
 
 Usage:
   pears-vault host start [--data-dir <path>] [--bootstrap <host:port,...>]
   pears-vault join <public-key> [--data-dir <path>] [--bootstrap <host:port,...>]
+  pears-vault sync <public-key> [--data-dir <path>] [--bootstrap <host:port,...>]
+  pears-vault mcp [public-key] [--data-dir <path>] [--bootstrap <host:port,...>]
+
+The MCP public key may also be set with PEARS_VAULT_PUBLIC_KEY.
 
 Join commands:
   add <name> <value>   Encrypt and store a secret
@@ -71,7 +77,12 @@ async function executeJoinCommand(peer: VaultPeer, line: string): Promise<boolea
 async function runJoinRepl(peer: VaultPeer): Promise<void> {
   printJoinHelp()
   const terminal = Boolean(process.stdin.isTTY && process.stdout.isTTY)
-  const rl = createInterface({ input: process.stdin, output: process.stdout, terminal, prompt: 'pears-vault> ' })
+  const rl = createInterface({
+    input: process.stdin,
+    output: process.stdout,
+    terminal,
+    prompt: 'pears-vault> '
+  })
   if (terminal) rl.prompt()
 
   for await (const line of rl) {
@@ -95,7 +106,7 @@ export async function runCli(argv = process.argv.slice(2)): Promise<void> {
   if (args[0] === 'host' && args[1] === 'start' && args.length === 2) {
     const dataDir = dataDirOption ?? join(homedir(), '.pears-vault', 'host')
     const host = await startHost({ dataDir, bootstrap })
-    await new Promise<void>(resolve => {
+    await new Promise<void>((resolve) => {
       process.once('SIGINT', resolve)
       process.once('SIGTERM', resolve)
     })
@@ -106,12 +117,13 @@ export async function runCli(argv = process.argv.slice(2)): Promise<void> {
   if (args[0] === 'join' && args[1] && args.length === 2) {
     const publicKey = args[1]
     parsePublicKey(publicKey)
-    const dataDir = dataDirOption ?? join(homedir(), '.pears-vault', 'peers', publicKey.slice(0, 16))
+    const dataDir = dataDirOption ?? defaultPeerDataDir(publicKey)
     const peer = await joinVault(publicKey, {
       dataDir,
       bootstrap,
+      onConnectionStatus: (message) => console.log(message),
       onUpdate: ({ name }) => console.log(`Vault updated: ${name}`),
-      onSyncError: error => console.error(`Live sync error: ${error.message}`)
+      onSyncError: (error) => console.error(`Live sync error: ${error.message}`)
     })
     console.log(`Connected to vault ${publicKey.slice(0, 12)}…`)
     try {
@@ -119,6 +131,40 @@ export async function runCli(argv = process.argv.slice(2)): Promise<void> {
     } finally {
       await peer.close()
     }
+    return
+  }
+
+  if (args[0] === 'sync' && args[1] && args.length === 2) {
+    const publicKey = args[1]
+    parsePublicKey(publicKey)
+    const dataDir = dataDirOption ?? defaultPeerDataDir(publicKey)
+    const peer = await joinVault(publicKey, {
+      dataDir,
+      bootstrap,
+      onConnectionStatus: (message) => console.error(message),
+      onSyncError: (error) => console.error(`Sync error: ${error.message}`)
+    })
+    try {
+      console.log(JSON.stringify(await peer.syncStatus()))
+    } finally {
+      await peer.close()
+    }
+    return
+  }
+
+  if (args[0] === 'mcp' && args.length <= 2) {
+    const publicKey = args[1] ?? process.env.PEARS_VAULT_PUBLIC_KEY
+    if (!publicKey) {
+      throw new Error('pears-vault mcp requires a public key argument or PEARS_VAULT_PUBLIC_KEY')
+    }
+    parsePublicKey(publicKey)
+    const dataDir = dataDirOption ?? defaultPeerDataDir(publicKey)
+    await runVaultMcpServer(publicKey, {
+      dataDir,
+      bootstrap,
+      onConnectionStatus: (message) => console.error(message),
+      onSyncError: (error) => console.error(`Live sync error: ${error.message}`)
+    })
     return
   }
 
@@ -134,7 +180,7 @@ function isEntryPoint(): boolean {
 }
 
 if (isEntryPoint()) {
-  runCli().catch(error => {
+  runCli().catch((error) => {
     console.error(error instanceof Error ? error.message : error)
     process.exitCode = 1
   })

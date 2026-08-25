@@ -31,23 +31,40 @@ export interface RpcServer {
   close: () => void
 }
 
-export async function waitForOpen(stream: Duplex & { opened?: boolean }): Promise<void> {
-  if (stream.opened) return
+export async function waitForOpen(
+  stream: Duplex & { opened?: boolean | Promise<boolean>; connected?: boolean },
+  timeoutMs = 10_000
+): Promise<void> {
+  if (stream.connected || stream.opened === true) return
   await new Promise<void>((resolve, reject) => {
+    let settled = false
+    let timer: NodeJS.Timeout | undefined
     const cleanup = (): void => {
+      if (timer) clearTimeout(timer)
       stream.off('open', onOpen)
       stream.off('error', onError)
     }
     const onOpen = (): void => {
+      if (settled) return
+      settled = true
       cleanup()
       resolve()
     }
     const onError = (error: Error): void => {
+      if (settled) return
+      settled = true
       cleanup()
       reject(error)
     }
     stream.once('open', onOpen)
     stream.once('error', onError)
+    if (stream.opened && typeof stream.opened !== 'boolean') {
+      stream.opened.then(
+        (opened) => (opened ? onOpen() : onError(new Error('connection closed before opening'))),
+        onError
+      )
+    }
+    timer = setTimeout(() => onError(new Error('connection timed out')), timeoutMs)
   })
 }
 
@@ -75,7 +92,9 @@ export class RpcClient {
 
   constructor(mux: any, stream: Duplex) {
     let resolveOpened: () => void
-    this.opened = new Promise(resolve => { resolveOpened = resolve })
+    this.opened = new Promise((resolve) => {
+      resolveOpened = resolve
+    })
     this.channel = mux.createChannel({
       protocol: CONTROL_PROTOCOL,
       onopen: () => resolveOpened()
@@ -86,7 +105,7 @@ export class RpcClient {
       onmessage: (value: unknown) => this.onMessage(value)
     })
     stream.once('close', () => this.rejectAll(new Error('Host connection closed')))
-    stream.once('error', error => this.rejectAll(error))
+    stream.once('error', (error) => this.rejectAll(error))
     this.channel.open()
   }
 
@@ -147,7 +166,12 @@ export function serveRpc(mux: any, handler: (request: RpcRequest) => Promise<unk
       assertFrame(value)
       if (!value || typeof value !== 'object') return
       const request = value as RpcRequest & { kind?: string }
-      if (request.kind !== 'request' || !Number.isInteger(request.id) || request.id < 1 || typeof request.type !== 'string') {
+      if (
+        request.kind !== 'request' ||
+        !Number.isInteger(request.id) ||
+        request.id < 1 ||
+        typeof request.type !== 'string'
+      ) {
         return
       }
       try {

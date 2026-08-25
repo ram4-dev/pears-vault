@@ -9,6 +9,7 @@ import { test } from 'node:test'
 import DHT from 'hyperdht'
 import Hypercore from 'hypercore'
 import Hyperbee from 'hyperbee'
+import { runCli } from '../src/cli.js'
 import { startHost } from '../src/host.js'
 import { joinVault } from '../src/peer.js'
 
@@ -94,3 +95,167 @@ test('two peers write, read, and live-sync through a local HyperDHT', { timeout:
   assert.match(vaultKeyFile, /^[0-9a-f]{64}$/)
   await rm(root, { recursive: true, force: true })
 })
+
+test(
+  'a peer bootstraps every existing block and persists live updates locally',
+  {
+    timeout: 30_000
+  },
+  async () => {
+    const root = await mkdtemp(join(tmpdir(), 'pears-vault-local-copy-'))
+    const peerDir = join(root, 'replica')
+    const bootstrapper = DHT.bootstrapper(await getFreeUdpPort(), '127.0.0.1')
+    let host: Awaited<ReturnType<typeof startHost>> | undefined
+    let writer: Awaited<ReturnType<typeof joinVault>> | undefined
+    let replica: Awaited<ReturnType<typeof joinVault>> | undefined
+
+    try {
+      await bootstrapper.fullyBootstrapped()
+      const bootstrap = [{ host: '127.0.0.1', port: bootstrapper.address().port }]
+      host = await startHost({
+        dataDir: join(root, 'host'),
+        bootstrap,
+        log: () => undefined
+      })
+      writer = await joinVault(host.publicKey, {
+        dataDir: join(root, 'writer'),
+        bootstrap
+      })
+      await writer.add('alpha', 'first-secret')
+      await writer.add('beta', 'second-secret')
+
+      let resolveGamma: (() => void) | undefined
+      const gammaUpdated = new Promise<void>((resolve) => {
+        resolveGamma = resolve
+      })
+      replica = await joinVault(host.publicKey, {
+        dataDir: peerDir,
+        bootstrap,
+        onUpdate: ({ name }) => {
+          if (name === 'gamma') resolveGamma?.()
+        }
+      })
+      const bootstrapped = await replica.syncStatus()
+      assert.equal(bootstrapped.fullySynced, true)
+      assert.equal(bootstrapped.localLength, bootstrapped.remoteLength)
+
+      await writer.add('gamma', 'third-secret')
+      await withTimeout(gammaUpdated, 2_000)
+      const updated = await replica.syncStatus()
+      assert.equal(updated.fullySynced, true)
+
+      await replica.close()
+      replica = undefined
+      const localCore = new Hypercore(join(peerDir, 'hypercore'))
+      const localBee = new Hyperbee(localCore, {
+        keyEncoding: 'utf-8',
+        valueEncoding: 'utf-8'
+      })
+      await localBee.ready()
+      const localAlpha = await localBee.get('alpha')
+      const localBeta = await localBee.get('beta')
+      const localGamma = await localBee.get('gamma')
+      assert.ok(localAlpha)
+      assert.ok(localBeta)
+      assert.ok(localGamma)
+      assert.equal(localAlpha.value.includes('first-secret'), false)
+      assert.equal(localBeta.value.includes('second-secret'), false)
+      assert.equal(localGamma.value.includes('third-secret'), false)
+      await localBee.close()
+    } finally {
+      await replica?.close().catch(() => undefined)
+      await writer?.close().catch(() => undefined)
+      await host?.close().catch(() => undefined)
+      await bootstrapper.destroy().catch(() => undefined)
+      await rm(root, { recursive: true, force: true })
+    }
+  }
+)
+
+test(
+  'sync command bootstraps a persistent local copy and prints status',
+  {
+    timeout: 30_000
+  },
+  async () => {
+    const root = await mkdtemp(join(tmpdir(), 'pears-vault-sync-command-'))
+    const bootstrapper = DHT.bootstrapper(await getFreeUdpPort(), '127.0.0.1')
+    let host: Awaited<ReturnType<typeof startHost>> | undefined
+    let writer: Awaited<ReturnType<typeof joinVault>> | undefined
+    const output: string[] = []
+    const errors: string[] = []
+    const originalLog = console.log
+    const originalError = console.error
+
+    try {
+      await bootstrapper.fullyBootstrapped()
+      const port = bootstrapper.address().port
+      const bootstrap = [{ host: '127.0.0.1', port }]
+      host = await startHost({
+        dataDir: join(root, 'host'),
+        bootstrap,
+        log: () => undefined
+      })
+      writer = await joinVault(host.publicKey, {
+        dataDir: join(root, 'writer'),
+        bootstrap
+      })
+      await writer.add('alpha', 'first-secret')
+      await writer.close()
+      writer = undefined
+
+      console.log = (...values: unknown[]) => output.push(values.join(' '))
+      console.error = (...values: unknown[]) => errors.push(values.join(' '))
+      const peerDir = join(root, 'synced-peer')
+      await runCli(['sync', host.publicKey, '--data-dir', peerDir, '--bootstrap', `127.0.0.1:${port}`])
+      const status = JSON.parse(output.at(-1) ?? '{}') as Record<string, unknown>
+      assert.equal(status.fullySynced, true)
+      assert.equal(status.dataDir, peerDir)
+      assert.equal(
+        errors.some((line) => line.includes('Sync error')),
+        false
+      )
+    } finally {
+      console.log = originalLog
+      console.error = originalError
+      await writer?.close().catch(() => undefined)
+      await host?.close().catch(() => undefined)
+      await bootstrapper.destroy().catch(() => undefined)
+      await rm(root, { recursive: true, force: true })
+    }
+  }
+)
+
+test(
+  'join retries and reports an actionable host-readiness error',
+  {
+    timeout: 5_000
+  },
+  async () => {
+    const root = await mkdtemp(join(tmpdir(), 'pears-vault-unreachable-'))
+    const bootstrapper = DHT.bootstrapper(await getFreeUdpPort(), '127.0.0.1')
+    const statuses: string[] = []
+
+    try {
+      await bootstrapper.fullyBootstrapped()
+      const bootstrap = [{ host: '127.0.0.1', port: bootstrapper.address().port }]
+      const unreachableKey = DHT.keyPair().publicKey.toString('hex')
+
+      await assert.rejects(
+        joinVault(unreachableKey, {
+          dataDir: join(root, 'peer'),
+          bootstrap,
+          connectionTimeoutMs: 700,
+          connectionAttemptTimeoutMs: 150,
+          connectionRetryDelayMs: 50,
+          onConnectionStatus: (message) => statuses.push(message)
+        }),
+        /Keep 'pears-vault host start' running and wait for 'Host is serving\.\.\.'/
+      )
+      assert.ok(statuses.filter((message) => message.startsWith('Connecting to vault')).length >= 2)
+    } finally {
+      await bootstrapper.destroy().catch(() => undefined)
+      await rm(root, { recursive: true, force: true })
+    }
+  }
+)
