@@ -45,6 +45,22 @@ test('package metadata and CLI usage expose hackvault', async () => {
   })
 })
 
+test('help prints usage and exits successfully', async () => {
+  const output: string[] = []
+  const originalLog = console.log
+  console.log = (...values: unknown[]) => output.push(values.join(' '))
+  try {
+    await runCli(['--help'])
+    await runCli(['-h'])
+  } finally {
+    console.log = originalLog
+  }
+
+  assert.equal(output.length, 2)
+  assert.match(output[0], /hackvault host start/)
+  assert.equal(output[1], output[0])
+})
+
 test(
   'installer is repeatable and removes only its managed installation',
   {

@@ -136,6 +136,10 @@ async function withProgrammaticPeer<T>(
 
 export async function runCli(argv = process.argv.slice(2)): Promise<void> {
   const args = [...argv]
+  if (args.length === 1 && (args[0] === '--help' || args[0] === '-h')) {
+    console.log(usage())
+    return
+  }
   const dataDirOption = takeOption(args, '--data-dir')
   const bootstrapOption = takeOption(args, '--bootstrap') ?? process.env.HACKVAULT_BOOTSTRAP ?? process.env.PEARS_VAULT_BOOTSTRAP
   const bootstrap = parseBootstrap(bootstrapOption)
