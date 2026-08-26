@@ -1,10 +1,10 @@
 {
-  "name": "pears-vault",
+  "name": "hackvault",
   "version": "0.1.0",
-  "description": "A CLI-first peer-to-peer encrypted secret vault built on Pear Runtime primitives.",
+  "description": "A peer-to-peer encrypted secret vault with automatic .env mirroring.",
   "type": "module",
   "bin": {
-    "pears-vault": "dist/cli.js"
+    "hackvault": "dist/cli.js"
   },
   "files": [
     "dist",

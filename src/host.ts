@@ -40,7 +40,7 @@ export async function startHost(options: HostOptions): Promise<VaultHost> {
   await envMirror.ready()
   const keyPair = await loadOrCreateDhtKeyPair(options.dataDir)
   const publicKey = b4a.toString(keyPair.publicKey, 'hex')
-  log(`PEARS_VAULT_PUBLIC_KEY=${publicKey}`)
+  log(`HACKVAULT_PUBLIC_KEY=${publicKey}`)
   log('Starting vault storage and announcing on HyperDHT…')
   const vaultKey = await loadOrCreateVaultKey(options.dataDir)
 

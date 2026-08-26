@@ -183,7 +183,7 @@ async function connectWithRetry(dht: any, publicKey: Buffer, options: PeerOption
   }
 
   throw new Error(
-    `Unable to reach the vault host after ${attempt} attempts. Keep 'pears-vault host start' running and wait for 'Host is serving...' before joining. Verify both peers use the same --bootstrap setting. Last error: ${lastError}`
+    `Unable to reach the vault host after ${attempt} attempts. Keep 'hackvault host start' running and wait for 'Host is serving...' before joining. Verify both peers use the same --bootstrap setting. Last error: ${lastError}`
   )
 }
 

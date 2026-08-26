@@ -12,15 +12,15 @@ import { joinVault, type VaultPeer } from './peer.js'
 import { parseBootstrap, parsePublicKey } from './validation.js'
 
 function usage(): string {
-  return `PEARS VAULT M2
+  return `HACKVAULT
 
 Usage:
-  pears-vault host start [--data-dir <path>] [--bootstrap <host:port,...>]
-  pears-vault join <public-key> [--data-dir <path>] [--bootstrap <host:port,...>]
-  pears-vault sync <public-key> [--data-dir <path>] [--bootstrap <host:port,...>]
-  pears-vault add <public-key> <name> <value> [--data-dir <path>] [--bootstrap <host:port,...>]
-  pears-vault list <public-key> [--data-dir <path>] [--bootstrap <host:port,...>]
-  pears-vault get <public-key> <name> [--data-dir <path>] [--bootstrap <host:port,...>]
+  hackvault host start [--data-dir <path>] [--bootstrap <host:port,...>]
+  hackvault join <public-key> [--data-dir <path>] [--bootstrap <host:port,...>]
+  hackvault sync <public-key> [--data-dir <path>] [--bootstrap <host:port,...>]
+  hackvault add <public-key> <name> <value> [--data-dir <path>] [--bootstrap <host:port,...>]
+  hackvault list <public-key> [--data-dir <path>] [--bootstrap <host:port,...>]
+  hackvault get <public-key> <name> [--data-dir <path>] [--bootstrap <host:port,...>]
 
 Join commands:
   add <name> <value>   Encrypt and store a secret
@@ -80,7 +80,7 @@ async function runJoinRepl(peer: VaultPeer): Promise<void> {
     input: process.stdin,
     output: process.stdout,
     terminal,
-    prompt: 'pears-vault> '
+    prompt: 'hackvault> '
   })
   if (terminal) rl.prompt()
 
@@ -137,7 +137,7 @@ async function withProgrammaticPeer<T>(
 export async function runCli(argv = process.argv.slice(2)): Promise<void> {
   const args = [...argv]
   const dataDirOption = takeOption(args, '--data-dir')
-  const bootstrapOption = takeOption(args, '--bootstrap') ?? process.env.PEARS_VAULT_BOOTSTRAP
+  const bootstrapOption = takeOption(args, '--bootstrap') ?? process.env.HACKVAULT_BOOTSTRAP ?? process.env.PEARS_VAULT_BOOTSTRAP
   const bootstrap = parseBootstrap(bootstrapOption)
 
   if (args[0] === 'host' && args[1] === 'start' && args.length === 2) {

@@ -99,7 +99,7 @@ export class RpcClient {
       protocol: CONTROL_PROTOCOL,
       onopen: () => resolveOpened()
     })
-    if (!this.channel) throw new Error('PEARS VAULT control channel is already open')
+    if (!this.channel) throw new Error('Hackvault control channel is already open')
     this.message = this.channel.addMessage({
       encoding: c.json,
       onmessage: (value: unknown) => this.onMessage(value)
@@ -159,7 +159,7 @@ export class RpcClient {
 
 export function serveRpc(mux: any, handler: (request: RpcRequest) => Promise<unknown>): RpcServer {
   const channel = mux.createChannel({ protocol: CONTROL_PROTOCOL })
-  if (!channel) throw new Error('PEARS VAULT control channel is already open')
+  if (!channel) throw new Error('Hackvault control channel is already open')
   const message = channel.addMessage({
     encoding: c.json,
     onmessage: async (value: unknown) => {

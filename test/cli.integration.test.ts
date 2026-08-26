@@ -61,16 +61,16 @@ class CliProcess {
 test('linked CLI prints its public key before DHT announcement completes', { timeout: 10_000 }, async () => {
   const root = await mkdtemp(join(tmpdir(), 'pears-vault-startup-'))
   const unavailableBootstrap = `127.0.0.1:${await freeUdpPort()}`
-  const linkedBin = join(root, 'pears-vault')
+  const linkedBin = join(root, 'hackvault')
   await symlink(resolve('dist/cli.js'), linkedBin)
   const host = new CliProcess(
     ['host', 'start', '--data-dir', join(root, 'host')],
-    { PEARS_VAULT_BOOTSTRAP: unavailableBootstrap },
+    { HACKVAULT_BOOTSTRAP: unavailableBootstrap },
     linkedBin
   )
 
   try {
-    await host.waitFor(/PEARS_VAULT_PUBLIC_KEY=[0-9a-f]{64}/, 2_000)
+    await host.waitFor(/HACKVAULT_PUBLIC_KEY=[0-9a-f]{64}/, 2_000)
     await host.waitFor(/Starting vault storage and announcing on HyperDHT/, 2_000)
   } finally {
     await host.stop()
@@ -95,11 +95,11 @@ test('compiled CLI host and joined peer stay live', { timeout: 45_000 }, async (
     persistentNode = new DHT({ bootstrap: [address], ephemeral: false })
     await persistentNode.fullyBootstrapped()
     const bootstrap = `${address.host}:${address.port}`
-    const env = { PEARS_VAULT_BOOTSTRAP: bootstrap }
+    const env = { HACKVAULT_BOOTSTRAP: bootstrap }
 
     const host = new CliProcess(['host', 'start', '--data-dir', join(root, 'host')], env)
     processes.push(host)
-    const key = (await host.waitFor(/PEARS_VAULT_PUBLIC_KEY=([0-9a-f]{64})/))[1]
+    const key = (await host.waitFor(/HACKVAULT_PUBLIC_KEY=([0-9a-f]{64})/))[1]
     await host.waitFor(/Host is serving encrypted vault replication/)
 
     const compiledCli = resolve('dist/cli.js')

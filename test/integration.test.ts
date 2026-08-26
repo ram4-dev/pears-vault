@@ -358,7 +358,7 @@ test(
           connectionRetryDelayMs: 50,
           onConnectionStatus: (message) => statuses.push(message)
         }),
-        /Keep 'pears-vault host start' running and wait for 'Host is serving\.\.\.'/
+        /Keep 'hackvault host start' running and wait for 'Host is serving\.\.\.'/
       )
       assert.ok(statuses.filter((message) => message.startsWith('Connecting to vault')).length >= 2)
     } finally {

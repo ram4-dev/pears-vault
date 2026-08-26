@@ -1,27 +1,37 @@
-# PEARS VAULT
+# Hackvault
 
-PEARS VAULT is a CLI-first peer-to-peer secret vault built with Pear Runtime primitives. A host owns the canonical Hypercore/Hyperbee database; interactive and programmatic peers keep encrypted disk-backed replicas and apply live updates without reconnecting.
+Hackvault is a peer-to-peer encrypted secret vault with automatic `.env` mirroring. A host owns the canonical Hypercore/Hyperbee database; interactive and programmatic peers keep encrypted disk-backed replicas and apply bidirectional updates without reconnecting.
 
 ## Install
 
+Install or update Hackvault with one command:
+
 ```bash
-npm install
-npm run build
-npm link
+curl -fsSL https://raw.githubusercontent.com/ram4-dev/pears-vault/main/scripts/install.sh | bash
 ```
 
-Node.js 22+ is supported.
+The installer builds the current `main` branch, stores the runtime under `~/.local/share/hackvault`, and creates the `hackvault` command in Homebrew's bin directory on macOS when writable, or `~/.local/bin` on macOS/Linux.
+
+Node.js 22+ and npm are required. If `~/.local/bin` is not already available in your shell, the installer prints the PATH entry to add.
+
+Uninstall the managed command and runtime files with:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ram4-dev/pears-vault/main/scripts/install.sh | bash -s -- --uninstall
+```
+
+To build a development checkout instead, run `npm install && npm run build`.
 
 ## Start the host
 
 ```bash
-pears-vault host start
+hackvault host start
 ```
 
 The host prints a 64-character share code:
 
 ```text
-PEARS_VAULT_PUBLIC_KEY=<public-key>
+HACKVAULT_PUBLIC_KEY=<public-key>
 ```
 
 Keep the process running and wait for:
@@ -39,7 +49,7 @@ These commands are non-interactive, use bounded connection and operation timeout
 Add or replace a secret:
 
 ```bash
-pears-vault add <public-key> <name> <value>
+hackvault add <public-key> <name> <value>
 ```
 
 Output:
@@ -51,7 +61,7 @@ Output:
 List key names only:
 
 ```bash
-pears-vault list <public-key>
+hackvault list <public-key>
 ```
 
 Output:
@@ -63,7 +73,7 @@ Output:
 Get one secret value:
 
 ```bash
-pears-vault get <public-key> <name>
+hackvault get <public-key> <name>
 ```
 
 Output:
@@ -77,7 +87,7 @@ A missing key returns `{"name":"API_TOKEN","value":null}`. `get` intentionally r
 Shell-quote values containing spaces or special characters:
 
 ```bash
-pears-vault add <public-key> DATABASE_URL 'postgres://user:password@host/db'
+hackvault add <public-key> DATABASE_URL 'postgres://user:password@host/db'
 ```
 
 All programmatic commands accept `--data-dir <path>` and `--bootstrap <host:port,...>`.
@@ -85,7 +95,7 @@ All programmatic commands accept `--data-dir <path>` and `--bootstrap <host:port
 ## Interactive peer
 
 ```bash
-pears-vault join <public-key>
+hackvault join <public-key>
 ```
 
 Commands:
@@ -103,16 +113,12 @@ The peer remains connected and prints `Vault updated: <name>` after a live updat
 ## Synchronize a local copy
 
 ```bash
-pears-vault sync <public-key>
+hackvault sync <public-key>
 ```
 
 This downloads every existing Hypercore block, updates `<project-root>/.env` (nearest Git root, with cwd fallback), prints JSON synchronization status, and exits.
 
-Unless `--data-dir` is supplied, peers use:
-
-```text
-~/.pears-vault/peers/<project-or-cwd-and-vault-hash>
-```
+Unless `--data-dir` is supplied, peers use a stable local data directory derived from the project/cwd and vault public key.
 
 Peer Hypercore storage remains in the peer data directory, but every CLI peer command (`join`, `add`, `list`, `get`, and `sync`) mirrors plaintext into `<project-root>/.env`. Supplying `--data-dir` changes storage only; it does not move the project `.env`.
 
@@ -134,12 +140,12 @@ The `.env` files intentionally contain plaintext values. Treat every project `.e
 ## Network options
 
 ```bash
-pears-vault host start --data-dir /tmp/vault-host
-pears-vault add <public-key> API_TOKEN secret --data-dir /tmp/vault-peer
-pears-vault list <public-key> --bootstrap 127.0.0.1:49737
+hackvault host start --data-dir /tmp/vault-host
+hackvault add <public-key> API_TOKEN secret --data-dir /tmp/vault-peer
+hackvault list <public-key> --bootstrap 127.0.0.1:49737
 ```
 
-`PEARS_VAULT_BOOTSTRAP=host:port` is equivalent to `--bootstrap`. Without an override, HyperDHT uses its public bootstrap network and attempts direct hole punching.
+`HACKVAULT_BOOTSTRAP=host:port` is equivalent to `--bootstrap`. Without an override, HyperDHT uses its public bootstrap network and attempts direct hole punching.
 
 ## Architecture
 
