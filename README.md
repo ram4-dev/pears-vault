@@ -13,7 +13,7 @@
 
 <video src="https://github.com/user-attachments/assets/f51aefc9-0b32-4745-8dc1-58eed3a14f3e" controls muted playsinline width="100%" title="Hackvault command-line demo"></video>
 
-> If your Markdown viewer does not render video, [watch or download the 15-second demo](assets/demo.mp4).
+> If your Markdown viewer does not render video, [watch or download the 24-second demo](assets/demo.mp4).
 
 ## Why Hackvault?
 
@@ -239,7 +239,7 @@ npm run studio   # optional preview
 npm run render   # writes ../assets/demo.mp4
 ```
 
-The Remotion composition is deterministic: 450 frames at 30 fps, 1280×720, rendered as H.264 MP4.
+The Remotion composition is deterministic: 720 frames at 30 fps, 1280×720, rendered as H.264 MP4.
 
 ## Built with
 
