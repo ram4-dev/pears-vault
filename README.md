@@ -11,7 +11,7 @@
   <a href="https://docs.pears.com/building-blocks/hyperdht"><img alt="P2P: HyperDHT" src="https://img.shields.io/badge/P2P-HyperDHT-75baff"></a>
 </p>
 
-<video src="https://github.com/user-attachments/assets/f51aefc9-0b32-4745-8dc1-58eed3a14f3e" controls muted playsinline width="100%" title="Hackvault command-line demo"></video>
+<video src="https://github.com/user-attachments/assets/f24c362b-0409-45d7-b613-93531fefd8a8" controls muted playsinline width="100%" title="Hackvault command-line demo"></video>
 
 > If your Markdown viewer does not render video, [watch or download the 24-second demo](assets/demo.mp4).
 
