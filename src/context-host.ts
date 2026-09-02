@@ -10,12 +10,16 @@ import {
   CONTEXT_SCHEMA_VERSION,
   parseContextEnvelope,
   parseContextReceipt,
+  validateContextDeleteCommand,
   validateContextCommand,
+  validateContextState,
   validateContextRecord,
   type ContextHello,
   type ContextReceipt,
   type ContextRecord,
-  type ContextCommand
+  type ContextCommand,
+  type ContextDeleteCommand,
+  type ContextState
 } from './context.js'
 import { CONTEXT_PROTOCOL, createMux, serveRpc, type RpcRequest } from './protocol.js'
 import type { RpcServer } from './shared/transport.js'
@@ -33,6 +37,7 @@ export interface ContextHostOptions {
   core: any
   hello: () => ContextHello
   appendContext: (command: ContextCommand) => Promise<ContextReceipt>
+  deleteContext: (command: ContextDeleteCommand) => Promise<ContextReceipt>
 }
 
 function parseStored(value: string, message: string): unknown {
@@ -62,6 +67,10 @@ export function attachContextHostSession(options: ContextHostOptions): ContextHo
       validateContextCommand(request.command)
       return options.appendContext(request.command)
     }
+    if (request.type === 'delete' || request.type === 'context-delete') {
+      validateContextDeleteCommand(request.command)
+      return options.deleteContext(request.command)
+    }
     throw new Error(`Unsupported context request type: ${request.type}`)
   }
   rpc = serveRpc(mux, handler, CONTEXT_PROTOCOL)
@@ -90,6 +99,7 @@ export interface ContextHost {
   coreKey: string
   hello: () => ContextHello
   appendContext: (command: ContextCommand) => Promise<ContextReceipt>
+  deleteContext: (command: ContextDeleteCommand) => Promise<ContextReceipt>
   close: () => Promise<void>
 }
 
@@ -106,8 +116,38 @@ export async function openContextHost(options: {
 
   const recordKey = (id: string): string => `record/${id}`
   const operationKey = (operationId: string): string => `operation/${operationId}`
+  const stateKey = (id: string): string => `state/${id}`
   const sealed = (key: string, value: unknown): string =>
     JSON.stringify(encryptContextPayload(key, JSON.stringify(value), contextKey))
+
+  const readReceipt = async (operationId: string): Promise<ContextReceipt | null> => {
+    const existing = await bee.get(operationKey(operationId))
+    if (!existing) return null
+    const envelope = parseContextEnvelope(existing.value)
+    validateEnvelope(envelope)
+    const receipt = parseContextReceipt(parseStored(
+      decryptContextPayload(operationKey(operationId), envelope, contextKey),
+      'Stored context receipt is corrupted'
+    ))
+    if (receipt.operationId !== operationId) throw new Error('Stored context operation receipt is inconsistent')
+    return receipt
+  }
+
+  const defaultState = (id: string): ContextState => ({ id, supersededBy: [] })
+
+  const readState = async (id: string): Promise<ContextState> => {
+    const existing = await bee.get(stateKey(id))
+    if (!existing) return defaultState(id)
+    const envelope = parseContextEnvelope(existing.value)
+    validateEnvelope(envelope)
+    const state = parseStored(
+      decryptContextPayload(stateKey(id), envelope, contextKey),
+      'Stored context state is corrupted'
+    )
+    validateContextState(state)
+    if (state.id !== id) throw new Error('Stored context state is inconsistent')
+    return state
+  }
 
   const appendContext = async (command: ContextCommand): Promise<ContextReceipt> => {
     validateContextCommand(command)
@@ -116,17 +156,8 @@ export async function openContextHost(options: {
     return work
 
     async function append(): Promise<ContextReceipt> {
-      const existing = await bee.get(operationKey(command.operationId))
-      if (existing) {
-        const envelope = parseContextEnvelope(existing.value)
-        validateEnvelope(envelope)
-        const receipt = parseContextReceipt(parseStored(
-          decryptContextPayload(operationKey(command.operationId), envelope, contextKey),
-          'Stored context receipt is corrupted'
-        ))
-        if (receipt.operationId !== command.operationId) throw new Error('Stored context operation receipt is inconsistent')
-        return { ...receipt, deduplicated: true }
-      }
+      const existing = await readReceipt(command.operationId)
+      if (existing) return { ...existing, deduplicated: true }
 
       const receivedAt = new Date().toISOString()
       const record: ContextRecord = {
@@ -137,10 +168,29 @@ export async function openContextHost(options: {
         schema: CONTEXT_SCHEMA_VERSION
       }
       validateContextRecord(record)
-      await bee.put(recordKey(record.id), sealed(recordKey(record.id), record))
-      await bee.put(`index/scope/${encodeURIComponent(record.scope)}/${record.id}`, record.id)
-      await bee.put(`index/kind/${record.kind}/${record.id}`, record.id)
-      await bee.put(`index/updated/${encodeURIComponent(record.receivedAt)}/${record.id}`, record.id)
+      const batch = bee.batch()
+      try {
+        await batch.put(recordKey(record.id), sealed(recordKey(record.id), record))
+        await batch.put(`index/scope/${encodeURIComponent(record.scope)}/${record.id}`, record.id)
+        await batch.put(`index/kind/${record.kind}/${record.id}`, record.id)
+        await batch.put(`index/updated/${encodeURIComponent(record.receivedAt)}/${record.id}`, record.id)
+        await batch.put(stateKey(record.id), sealed(stateKey(record.id), defaultState(record.id)))
+
+        for (const targetId of command.supersedes ?? []) {
+          const target = await bee.get(recordKey(targetId))
+          if (!target) throw new Error(`Cannot supersede unknown context record ${targetId}`)
+          const targetState = await readState(targetId)
+          if (targetState.deletedAt !== undefined) throw new Error(`Cannot supersede deleted context record ${targetId}`)
+          await batch.put(stateKey(targetId), sealed(stateKey(targetId), {
+            ...targetState,
+            supersededBy: [...targetState.supersededBy, record.id]
+          }))
+        }
+        await batch.flush()
+      } catch (error) {
+        await batch.close().catch(() => undefined)
+        throw error
+      }
 
       const receipt: ContextReceipt = {
         operationId: command.operationId,
@@ -153,6 +203,44 @@ export async function openContextHost(options: {
         JSON.stringify(receipt),
         contextKey
       )))
+      options.onUpdate?.(receipt)
+      return receipt
+    }
+  }
+
+  const deleteContext = async (command: ContextDeleteCommand): Promise<ContextReceipt> => {
+    validateContextDeleteCommand(command)
+    const work = contextWriteQueue.then(() => remove(), () => remove())
+    contextWriteQueue = work.then(() => undefined, () => undefined)
+    return work
+
+    async function remove(): Promise<ContextReceipt> {
+      const existing = await readReceipt(command.operationId)
+      if (existing) return { ...existing, deduplicated: true }
+      const target = await bee.get(recordKey(command.id))
+      if (!target) throw new Error(`Cannot delete unknown context record ${command.id}`)
+      const state = await readState(command.id)
+      if (state.deletedAt !== undefined) throw new Error(`Context record ${command.id} is already deleted`)
+      const deletedAt = new Date().toISOString()
+      const nextState: ContextState = { ...state, deletedAt }
+      const batch = bee.batch()
+      try {
+        await batch.put(stateKey(command.id), sealed(stateKey(command.id), nextState))
+        await batch.flush()
+      } catch (error) {
+        await batch.close().catch(() => undefined)
+        throw error
+      }
+      const receipt: ContextReceipt = {
+        operationId: command.operationId,
+        id: command.id,
+        length: core.length,
+        deduplicated: false
+      }
+      await bee.put(operationKey(command.operationId), sealed(
+        operationKey(command.operationId),
+        receipt
+      ))
       options.onUpdate?.(receipt)
       return receipt
     }
@@ -171,6 +259,7 @@ export async function openContextHost(options: {
     coreKey: b4a.toString(core.key, 'hex'),
     hello,
     appendContext,
+    deleteContext,
     close: async () => {
       await contextWriteQueue
       await bee.close()

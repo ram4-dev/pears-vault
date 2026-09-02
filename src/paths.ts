@@ -48,3 +48,7 @@ export function defaultContextPeerDataDir(publicKey: string, cwd = process.cwd()
 export function contextCorePath(dataDir: string): string {
   return join(dataDir, 'context-hypercore')
 }
+
+export function contextProjectionPath(projectRoot: string): string {
+  return join(projectRoot, '.pears-context')
+}
