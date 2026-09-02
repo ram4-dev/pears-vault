@@ -7,6 +7,8 @@ import Hyperbee from 'hyperbee'
 import { decryptSecret, encryptSecret, validateEnvelope } from './crypto.js'
 import { DotEnvMirror, type EnvChanges } from './env.js'
 import { attachHostSession, type HostSession } from './host-session.js'
+import { attachContextHostSession, openContextHost, type ContextHostSession } from './context-host.js'
+import { createMux } from './protocol.js'
 import { ensureDataDir, loadOrCreateDhtKeyPair, loadOrCreateVaultKey } from './storage.js'
 import { type BootstrapNode, validateSecretName } from './validation.js'
 
@@ -21,6 +23,7 @@ export interface HostOptions {
 export interface VaultHost {
   publicKey: string
   coreKey: string
+  contextCoreKey: string
   close: () => Promise<void>
 }
 
@@ -76,6 +79,20 @@ export async function startHost(options: HostOptions): Promise<VaultHost> {
     await envMirror.applyVaultSnapshot(await readVaultValues())
   }
   await applyStartupEnvChanges()
+
+  const contextSessions = new Set<ContextHostSession>()
+  const contextHost = await openContextHost({
+    dataDir: options.dataDir,
+    onUpdate: receipt => {
+      for (const session of contextSessions) {
+        try {
+          session.notify('updated', receipt)
+        } catch {
+          contextSessions.delete(session)
+        }
+      }
+    }
+  })
 
   const dht = new DHT(options.bootstrap ? { bootstrap: options.bootstrap } : undefined)
   const sessions = new Set<HostSession>()
@@ -143,8 +160,10 @@ export async function startHost(options: HostOptions): Promise<VaultHost> {
   }
 
   const server = dht.createServer((socket: any) => {
+    const mux = createMux(socket)
     const session = attachHostSession({
       socket,
+      mux,
       core,
       hello: () => ({
         protocol: 1,
@@ -158,8 +177,18 @@ export async function startHost(options: HostOptions): Promise<VaultHost> {
     })
     sessions.add(session)
 
+    const contextSession = attachContextHostSession({
+      socket,
+      mux,
+      core: contextHost.core,
+      hello: contextHost.hello,
+      appendContext: contextHost.appendContext
+    })
+    contextSessions.add(contextSession)
+
     const cleanup = (): void => {
       sessions.delete(session)
+      contextSessions.delete(contextSession)
     }
     socket.once('close', cleanup)
     socket.once('error', cleanup)
@@ -182,13 +211,17 @@ export async function startHost(options: HostOptions): Promise<VaultHost> {
   return {
     publicKey,
     coreKey,
+    contextCoreKey: contextHost.coreKey,
     close: async () => {
       clearInterval(watcher)
       await watcherQueue
       for (const session of sessions) session.close()
       sessions.clear()
+      for (const session of contextSessions) session.close()
+      contextSessions.clear()
       await server.close()
       await dht.destroy()
+      await contextHost.close()
       await bee.close()
     }
   }

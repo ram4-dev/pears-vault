@@ -5,6 +5,7 @@ export const VAULT_KEY_BYTES = 32;
 export const GCM_IV_BYTES = 12;
 export const GCM_TAG_BYTES = 16;
 export const MAX_SECRET_BYTES = 64 * 1024;
+export const MAX_CONTEXT_BYTES = 64 * 1024;
 
 export interface CiphertextEnvelope {
 	v: 1;
@@ -100,3 +101,58 @@ export function decryptSecret(
 	]);
 	return plaintext.toString("utf8");
 }
+
+export function validateContextKey(key: Buffer): void {
+	validateVaultKey(key);
+}
+
+export function encryptContextPayload(
+	aad: string,
+	plaintext: string,
+	key: Buffer,
+): CiphertextEnvelope {
+	validateContextKey(key);
+	const input = Buffer.from(plaintext, "utf8");
+	if (input.length === 0) throw new Error("Context payload cannot be empty");
+	if (input.length > MAX_CONTEXT_BYTES) {
+		throw new Error(`Context payload exceeds ${MAX_CONTEXT_BYTES} bytes`);
+	}
+
+	const iv = randomBytes(GCM_IV_BYTES);
+	const cipher = createCipheriv("aes-256-gcm", key, iv, {
+		authTagLength: GCM_TAG_BYTES,
+	});
+	cipher.setAAD(Buffer.from(aad, "utf8"));
+	const ciphertext = Buffer.concat([cipher.update(input), cipher.final()]);
+	return {
+		v: 1,
+		alg: "aes-256-gcm",
+		iv: iv.toString("hex"),
+		ciphertext: ciphertext.toString("hex"),
+		tag: cipher.getAuthTag().toString("hex"),
+	};
+}
+
+export function decryptContextPayload(
+	aad: string,
+	envelope: CiphertextEnvelope,
+	key: Buffer,
+): string {
+	validateContextKey(key);
+	validateEnvelope(envelope);
+	const decipher = createDecipheriv(
+		"aes-256-gcm",
+		key,
+		Buffer.from(envelope.iv, "hex"),
+		{ authTagLength: GCM_TAG_BYTES },
+	);
+	decipher.setAAD(Buffer.from(aad, "utf8"));
+	decipher.setAuthTag(Buffer.from(envelope.tag, "hex"));
+	return Buffer.concat([
+		decipher.update(Buffer.from(envelope.ciphertext, "hex")),
+		decipher.final(),
+	]).toString("utf8");
+}
+
+export const encryptContext = encryptContextPayload
+export const decryptContext = decryptContextPayload

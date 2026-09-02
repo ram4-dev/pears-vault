@@ -19,6 +19,7 @@ export interface HostSession {
 
 export interface HostSessionOptions {
   socket: Duplex
+  mux?: any
   core: any
   hello: () => VaultHello
   upsertVault: (name: string, encoded: string, plaintext: string) => Promise<number>
@@ -47,7 +48,7 @@ function decodeEnvelope(
 }
 
 export function attachHostSession(options: HostSessionOptions): HostSession {
-  const mux = createMux(options.socket)
+  const mux = options.mux ?? createMux(options.socket)
   let replicationAttached = false
   let closed = false
   let rpc: RpcServer

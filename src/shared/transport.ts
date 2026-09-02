@@ -4,6 +4,8 @@ import c from 'compact-encoding'
 import Protomux from 'protomux'
 
 export const CONTROL_PROTOCOL = 'pears-vault/control/1'
+export const CONTEXT_PROTOCOL = 'pears-vault/context/1'
+export const CONTEXT_CONTROL_PROTOCOL = CONTEXT_PROTOCOL
 export const MAX_FRAME_BYTES = 256 * 1024
 
 export interface RpcRequest {
@@ -90,13 +92,13 @@ export class RpcClient {
   private readonly message: any
   private readonly opened: Promise<void>
 
-  constructor(mux: any, stream: Duplex) {
+  constructor(mux: any, stream: Duplex, protocol = CONTROL_PROTOCOL) {
     let resolveOpened: () => void
     this.opened = new Promise((resolve) => {
       resolveOpened = resolve
     })
     this.channel = mux.createChannel({
-      protocol: CONTROL_PROTOCOL,
+      protocol,
       onopen: () => resolveOpened()
     })
     if (!this.channel) throw new Error('Hackvault control channel is already open')
@@ -157,8 +159,12 @@ export class RpcClient {
   }
 }
 
-export function serveRpc(mux: any, handler: (request: RpcRequest) => Promise<unknown>): RpcServer {
-  const channel = mux.createChannel({ protocol: CONTROL_PROTOCOL })
+export function serveRpc(
+  mux: any,
+  handler: (request: RpcRequest) => Promise<unknown>,
+  protocol = CONTROL_PROTOCOL
+): RpcServer {
+  const channel = mux.createChannel({ protocol })
   if (!channel) throw new Error('Hackvault control channel is already open')
   const message = channel.addMessage({
     encoding: c.json,

@@ -1,5 +1,7 @@
 export {
   CONTROL_PROTOCOL,
+  CONTEXT_PROTOCOL,
+  CONTEXT_CONTROL_PROTOCOL,
   MAX_FRAME_BYTES,
   RpcClient,
   createMux,

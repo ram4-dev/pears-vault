@@ -71,6 +71,40 @@ export async function loadOrCreateVaultKey(dataDir: string): Promise<Buffer> {
 	return key;
 }
 
+export async function loadOrCreateContextKey(dataDir: string): Promise<Buffer> {
+	const path = join(dataDir, "context-key");
+	try {
+		const raw = (await readFile(path, "utf8")).trim();
+		if (!/^(?:[0-9a-f]{2})+$/i.test(raw)) throw new Error("Stored context key is malformed");
+		const key = Buffer.from(raw, "hex");
+		validateVaultKey(key);
+		return key;
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+	}
+
+	const key = randomBytes(VAULT_KEY_BYTES);
+	await writePrivateFile(path, key.toString("hex"));
+	return key;
+}
+
+export async function loadOrCreatePeerIdentity(dataDir: string): Promise<string> {
+	const path = join(dataDir, "peer-id");
+	try {
+		const identity = (await readFile(path, "utf8")).trim();
+		if (!/^[0-9a-f]{32}$/i.test(identity)) throw new Error("Stored peer identity is malformed");
+		return identity;
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+	}
+
+	const identity = randomBytes(16).toString("hex");
+	await writePrivateFile(path, identity);
+	return identity;
+}
+
+export const loadOrCreatePeerId = loadOrCreatePeerIdentity;
+
 export async function ensureDataDir(dataDir: string): Promise<void> {
 	await mkdir(dataDir, { recursive: true, mode: 0o700 });
 	await chmod(dataDir, 0o700);

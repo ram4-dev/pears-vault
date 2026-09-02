@@ -10,6 +10,8 @@ import { downloadCoreCopy, parseLengthReceipt } from './replication.js'
 import { ensureDataDir } from './storage.js'
 import { type BootstrapNode, parsePublicKey, validateSecretName } from './validation.js'
 
+export { joinContext } from './context-peer.js'
+
 export interface VaultUpdate {
   name: string
   length: number
