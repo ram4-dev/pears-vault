@@ -52,3 +52,7 @@ export function contextCorePath(dataDir: string): string {
 export function contextProjectionPath(projectRoot: string): string {
   return join(projectRoot, '.pears-context')
 }
+
+export function contextSkillPath(projectRoot: string): string {
+  return join(projectRoot, '.codex', 'skills', 'hackvault-context', 'SKILL.md')
+}
