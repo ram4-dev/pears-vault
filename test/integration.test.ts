@@ -47,6 +47,16 @@ async function waitForEnv(path: string, predicate: (content: string) => boolean,
   throw new Error(`Timed out waiting for env update at ${path}`)
 }
 
+async function waitFor<T>(read: () => Promise<T>, predicate: (value: T) => boolean, timeoutMs = 8_000): Promise<T> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    const value = await read()
+    if (predicate(value)) return value
+    await new Promise(resolve => setTimeout(resolve, 50))
+  }
+  throw new Error('Timed out waiting for peer reconnection')
+}
+
 function parseJson(value: string): Record<string, unknown> {
   try {
     return JSON.parse(value) as Record<string, unknown>
@@ -362,6 +372,47 @@ test(
       )
       assert.ok(statuses.filter((message) => message.startsWith('Connecting to vault')).length >= 2)
     } finally {
+      await bootstrapper.destroy().catch(() => undefined)
+      await rm(root, { recursive: true, force: true })
+    }
+  }
+)
+
+test(
+  'a managed vault peer reconnects after the host restarts',
+  { timeout: 30_000 },
+  async () => {
+    const root = await mkdtemp(join(tmpdir(), 'pears-vault-reconnect-'))
+    const bootstrapper = DHT.bootstrapper(await getFreeUdpPort(), '127.0.0.1')
+    let host: Awaited<ReturnType<typeof startHost>> | undefined
+    let peer: Awaited<ReturnType<typeof joinVault>> | undefined
+
+    try {
+      await bootstrapper.fullyBootstrapped()
+      const bootstrap = [{ host: '127.0.0.1', port: bootstrapper.address().port }]
+      const hostDir = join(root, 'host')
+      host = await startHost({ dataDir: hostDir, bootstrap, log: () => undefined })
+      peer = await joinVault(host.publicKey, {
+        dataDir: join(root, 'peer'),
+        bootstrap,
+        connectionRetryDelayMs: 50,
+        connectionAttemptTimeoutMs: 150
+      })
+      await peer.add('before_restart', 'still_available')
+
+      await host.close()
+      host = undefined
+      await assert.rejects(() => peer!.add('offline_write', 'rejected'), /disconnected/)
+      assert.equal(await peer.get('before_restart'), 'still_available')
+
+      host = await startHost({ dataDir: hostDir, bootstrap, log: () => undefined })
+      await waitForEnv(join(root, 'peer', '.env'), content => /before_restart=still_available/.test(content), 5_000)
+      await waitFor(() => peer!.syncStatus(), status => status.connected && status.fullySynced, 8_000)
+      await peer.add('after_restart', 'restored')
+      assert.equal(await peer.get('after_restart'), 'restored')
+    } finally {
+      await peer?.close().catch(() => undefined)
+      await host?.close().catch(() => undefined)
       await bootstrapper.destroy().catch(() => undefined)
       await rm(root, { recursive: true, force: true })
     }

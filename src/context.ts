@@ -103,6 +103,7 @@ export interface ContextSyncStatus {
   fullySynced: boolean
   lastSyncedAt: string | null
   lastError: string | null
+  reconnectAttempts: number
 }
 
 const MAX_TEXT_BYTES = 64 * 1024

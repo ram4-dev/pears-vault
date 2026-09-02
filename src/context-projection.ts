@@ -77,6 +77,10 @@ export class ContextProjection {
     return current
   }
 
+  async waitForIdle(): Promise<void> {
+    await this.queue
+  }
+
   private async write(records: Iterable<ContextCurrentRecord>, length: number): Promise<void> {
     if (!Number.isInteger(length) || length < 0) throw new Error('Context projection length must be a non-negative integer')
     const sorted = [...records].sort(compareRecords)

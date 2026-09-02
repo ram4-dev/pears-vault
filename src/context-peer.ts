@@ -1,6 +1,5 @@
 /// <reference types="node" />
 
-import DHT from 'hyperdht'
 import Hypercore from 'hypercore'
 import Hyperbee from 'hyperbee'
 import {
@@ -31,7 +30,8 @@ import {
   type ContextState,
   type ContextSyncStatus
 } from './context.js'
-import { CONTEXT_PROTOCOL, createMux, RpcClient, waitForOpen } from './protocol.js'
+import { CONTEXT_PROTOCOL, RpcClient } from './protocol.js'
+import { createPeerSession, type PeerSessionConnection } from './peer-session.js'
 import { downloadCoreCopy, parseLengthReceipt } from './replication.js'
 import { contextCorePath } from './paths.js'
 import { ContextProjection } from './context-projection.js'
@@ -79,31 +79,6 @@ function parseHello(value: unknown): ContextHello {
   }
 }
 
-async function connectWithRetry(dht: any, publicKey: Buffer, options: ContextPeerOptions): Promise<any> {
-  const totalTimeoutMs = options.connectionTimeoutMs ?? 45_000
-  const attemptTimeoutMs = options.connectionAttemptTimeoutMs ?? 10_000
-  const retryDelayMs = options.connectionRetryDelayMs ?? 1_000
-  const deadline = Date.now() + totalTimeoutMs
-  let attempt = 0
-  let lastError = 'connection timed out'
-  while (Date.now() < deadline) {
-    attempt++
-    options.onConnectionStatus?.(`Connecting to context host (attempt ${attempt})...`)
-    const connection = dht.connect(publicKey)
-    try {
-      await waitForOpen(connection, Math.min(attemptTimeoutMs, deadline - Date.now()))
-      return connection
-    } catch (error) {
-      lastError = error instanceof Error ? error.message : 'connection failed'
-      connection.destroy()
-      if (Date.now() + retryDelayMs >= deadline) break
-      options.onConnectionStatus?.(`Context host not reachable yet; retrying in ${retryDelayMs}ms...`)
-      await new Promise(resolve => setTimeout(resolve, retryDelayMs))
-    }
-  }
-  throw new Error(`Unable to reach the context host after ${attempt} attempts. Last error: ${lastError}`)
-}
-
 function parseStoredEnvelope(value: unknown): CiphertextEnvelope {
   if (typeof value !== 'string') throw new Error('Stored context record is not encoded as text')
   const envelope = parseContextEnvelope(value)
@@ -121,39 +96,32 @@ export async function joinContext(publicKeyHex: string, options: ContextPeerOpti
   const publicKey = parsePublicKey(publicKeyHex)
   await ensureDataDir(options.dataDir)
   const peerId = await loadOrCreatePeerIdentity(options.dataDir)
-  const dht = new DHT(options.bootstrap ? { bootstrap: options.bootstrap } : undefined)
   const timeoutMs = options.syncTimeoutMs ?? 15_000
-  options.onConnectionStatus?.('Bootstrapping HyperDHT for context…')
-  await dht.fullyBootstrapped()
-  let connection: any
-  try {
-    connection = await connectWithRetry(dht, publicKey, options)
-  } catch (error) {
-    await dht.destroy()
-    throw error
-  }
-
-  const mux = createMux(connection)
-  const rpc = new RpcClient(mux, connection, CONTEXT_PROTOCOL)
-  const hello = parseHello(await rpc.request('context-hello'))
-  const contextKey = Buffer.from(hello.contextKey, 'hex')
-  const core = new Hypercore(contextCorePath(options.dataDir), Buffer.from(hello.coreKey, 'hex'))
-  await core.ready()
-  const bee = new Hyperbee(core, { keyEncoding: 'utf-8', valueEncoding: 'utf-8' })
-  core.replicate(mux)
-  await bee.ready()
-
   const projection = options.projectionPath
     ? new ContextProjection(options.projectionPath, true)
     : options.projectRoot
       ? new ContextProjection(options.projectRoot)
       : undefined
 
-  let remoteLength = hello.length
+  let core: any
+  let bee: any
+  let rpc: RpcClient | undefined
+  let contextKey: Buffer
+  let remoteLength = 0
   let lastSyncedAt: string | null = null
   let lastError: Error | null = null
-  let connected = true
   let syncQueue: Promise<void> = Promise.resolve()
+
+  const session = createPeerSession({
+    publicKey,
+    bootstrap: options.bootstrap,
+    label: 'context host',
+    connectionTimeoutMs: options.connectionTimeoutMs,
+    connectionAttemptTimeoutMs: options.connectionAttemptTimeoutMs,
+    connectionRetryDelayMs: options.connectionRetryDelayMs,
+    bootstrappingMessage: 'Bootstrapping HyperDHT for context…',
+    onConnectionStatus: options.onConnectionStatus
+  })
 
   const readState = async (id: string): Promise<ContextState> => {
     const node = await bee.get(`state/${id}`)
@@ -206,21 +174,63 @@ export async function joinContext(publicKeyHex: string, options: ContextPeerOpti
     })
   }
 
-  rpc.onNotification((event, payload) => {
-    if (event !== 'updated' && event !== 'context-updated') return
-    try {
-      scheduleSync(payload)
-    } catch (error) {
-      lastError = error instanceof Error ? error : new Error('Invalid background context update')
-      options.onSyncError?.(lastError)
+  session.addDomain({
+    restore: async ({ socket, mux }: PeerSessionConnection) => {
+      const nextRpc = new RpcClient(mux, socket, CONTEXT_PROTOCOL)
+      const hello = parseHello(await nextRpc.request('context-hello'))
+      const nextContextKey = Buffer.from(hello.contextKey, 'hex')
+      if (core === undefined) {
+        contextKey = nextContextKey
+        core = new Hypercore(contextCorePath(options.dataDir), Buffer.from(hello.coreKey, 'hex'))
+        await core.ready()
+        bee = new Hyperbee(core, { keyEncoding: 'utf-8', valueEncoding: 'utf-8' })
+        await bee.ready()
+      } else if (core.key.toString('hex') !== hello.coreKey || contextKey.toString('hex') !== nextContextKey.toString('hex')) {
+        throw new Error('Host identity or context key changed while reconnecting')
+      }
+      rpc = nextRpc
+      nextRpc.onNotification((event, payload) => {
+        if (event !== 'updated' && event !== 'context-updated') return
+        try {
+          scheduleSync(payload)
+        } catch (error) {
+          lastError = error instanceof Error ? error : new Error('Invalid background context update')
+          options.onSyncError?.(lastError)
+        }
+      })
+      core.replicate(mux)
+      const replication = await nextRpc.request('context-replicate-ready')
+      await syncThrough(parseLengthReceipt(replication, 'context replication receipt'))
+    },
+    disconnect: error => {
+      rpc?.close()
+      rpc = undefined
+      syncQueue = Promise.resolve()
+      lastError = error
     }
   })
 
-  const replication = await rpc.request('context-replicate-ready')
-  await syncThrough(parseLengthReceipt(replication, 'context replication receipt'))
+  try {
+    await session.start()
+  } catch (error) {
+    await bee?.close().catch(() => undefined)
+    throw error
+  }
 
   const syncStatus = async (): Promise<ContextSyncStatus> => {
     await syncQueue
+    if (!rpc) {
+      return {
+        connected: false,
+        dataDir: options.dataDir,
+        localLength: core.length,
+        remoteLength,
+        fullySynced: core.length >= remoteLength && (remoteLength === 0 || await core.has(0, remoteLength)),
+        lastSyncedAt,
+        lastError: lastError?.message ?? null,
+        reconnectAttempts: session.reconnectAttempts
+      }
+    }
     const response = await rpc.request('context-status')
     remoteLength = Math.max(remoteLength, parseLengthReceipt(response, 'context sync status'))
     await core.update()
@@ -232,21 +242,21 @@ export async function joinContext(publicKeyHex: string, options: ContextPeerOpti
       throw lastError
     }
     return {
-      connected,
+      connected: true,
       dataDir: options.dataDir,
       localLength: core.length,
       remoteLength,
       fullySynced: core.length >= remoteLength && (remoteLength === 0 || (await core.has(0, remoteLength))),
       lastSyncedAt,
-      lastError: lastError?.message ?? null
+      lastError: lastError?.message ?? null,
+      reconnectAttempts: session.reconnectAttempts
     }
   }
 
   const publish = async (input: ContextPublishInput): Promise<ContextPublishResult> => {
     validateContextPublishInput(input)
-    if (!connected) throw new Error('Context peer is disconnected')
-    const command = { ...input, peerId }
-    const response = parseContextReceipt(await rpc.request('context-append', { command }))
+    if (!rpc) throw new Error('Context peer is disconnected')
+    const response = parseContextReceipt(await rpc.request('context-append', { command: { ...input, peerId } }))
     await syncThrough(response.length)
     const record = await readRecord(response.id)
     if (!record) throw new Error(`Context write receipt is missing record ${response.id}`)
@@ -256,7 +266,7 @@ export async function joinContext(publicKeyHex: string, options: ContextPeerOpti
 
   const supersede = async (input: ContextPublishInput & { supersedes: string[] }): Promise<ContextPublishResult> => {
     validateContextCommand({ ...input, peerId })
-    if (!connected) throw new Error('Context peer is disconnected')
+    if (!rpc) throw new Error('Context peer is disconnected')
     const response = parseContextReceipt(await rpc.request('context-append', {
       command: { ...input, peerId }
     }))
@@ -271,7 +281,7 @@ export async function joinContext(publicKeyHex: string, options: ContextPeerOpti
     validateRecordId(id)
     const command: ContextDeleteCommand = { schema: 1, operationId, peerId, id }
     validateContextDeleteCommand(command)
-    if (!connected) throw new Error('Context peer is disconnected')
+    if (!rpc) throw new Error('Context peer is disconnected')
     const response = parseContextReceipt(await rpc.request('context-delete', { command }))
     await syncThrough(response.length)
     return response
@@ -308,12 +318,9 @@ export async function joinContext(publicKeyHex: string, options: ContextPeerOpti
     get: readRecord,
     syncStatus,
     close: async () => {
-      connected = false
-      await syncQueue
-      rpc.close()
-      connection.destroy()
+      await session.close()
       await bee.close()
-      await dht.destroy()
+      await projection?.waitForIdle()
     }
   }
 }
