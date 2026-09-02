@@ -6,6 +6,7 @@ import Hyperbee from 'hyperbee'
 import { decryptSecret, encryptSecret, validateEnvelope, validateVaultKey } from './crypto.js'
 import { DotEnvMirror } from './env.js'
 import { createMux, RpcClient, waitForOpen } from './protocol.js'
+import { downloadCoreCopy, parseLengthReceipt } from './replication.js'
 import { ensureDataDir } from './storage.js'
 import { type BootstrapNode, parsePublicKey, validateSecretName } from './validation.js'
 
@@ -78,13 +79,6 @@ function parseStoredEnvelope(value: string): unknown {
   }
 }
 
-function parseLength(value: unknown, context: string): number {
-  if (!value || typeof value !== 'object' || !Number.isInteger((value as Record<string, unknown>).length)) {
-    throw new Error(`Host returned an invalid ${context}`)
-  }
-  return (value as Record<string, unknown>).length as number
-}
-
 function parseUpdate(value: unknown): VaultUpdate {
   if (!value || typeof value !== 'object') throw new Error('Host sent an invalid vault update')
   const update = value as Record<string, unknown>
@@ -94,68 +88,6 @@ function parseUpdate(value: unknown): VaultUpdate {
   }
   if (typeof update.deleted !== 'boolean') throw new Error('Host sent an invalid vault update operation')
   return { name: update.name, length: update.length as number, deleted: update.deleted }
-}
-
-async function waitForLength(core: any, expected: number, timeoutMs: number): Promise<void> {
-  const deadline = Date.now() + timeoutMs
-  while (core.length < expected) {
-    const remaining = deadline - Date.now()
-    if (remaining <= 0) {
-      throw new Error(`Timed out while syncing vault (have ${core.length}, need ${expected})`)
-    }
-
-    await new Promise<void>((resolve, reject) => {
-      const cleanup = (): void => {
-        clearTimeout(timer)
-        core.off('append', onAppend)
-      }
-      const onAppend = (): void => {
-        cleanup()
-        resolve()
-      }
-      const timer = setTimeout(() => {
-        cleanup()
-        reject(new Error(`Timed out while syncing vault (have ${core.length}, need ${expected})`))
-      }, remaining)
-
-      core.once('append', onAppend)
-      core.update().then(
-        () => {
-          if (core.length >= expected) onAppend()
-        },
-        (error: Error) => {
-          cleanup()
-          reject(error)
-        }
-      )
-    })
-  }
-}
-
-async function downloadLocalCopy(core: any, expected: number, timeoutMs: number): Promise<void> {
-  await waitForLength(core, expected, timeoutMs)
-  if (expected === 0) return
-  const range = core.download({ start: 0, end: expected })
-  let timer: NodeJS.Timeout | undefined
-  try {
-    await Promise.race([
-      range.done(),
-      new Promise<never>((_resolve, reject) => {
-        timer = setTimeout(
-          () => reject(new Error(`Timed out downloading local vault copy through block ${expected}`)),
-          timeoutMs
-        )
-      })
-    ])
-  } catch (error) {
-    range.destroy()
-    throw error
-  } finally {
-    if (timer) clearTimeout(timer)
-  }
-  if (!(await core.has(0, expected))) {
-    throw new Error(`Local vault copy is incomplete through block ${expected}`)
-  }
 }
 
 async function connectWithRetry(dht: any, publicKey: Buffer, options: PeerOptions): Promise<any> {
@@ -223,7 +155,7 @@ export async function joinVault(publicKeyHex: string, options: PeerOptions): Pro
 
   const syncThrough = async (expected: number): Promise<void> => {
     remoteLength = Math.max(remoteLength, expected)
-    await downloadLocalCopy(core, remoteLength, timeoutMs)
+    await downloadCoreCopy(core, remoteLength, timeoutMs)
     backgroundSyncError = null
     lastSyncedAt = new Date().toISOString()
   }
@@ -276,21 +208,21 @@ export async function joinVault(publicKeyHex: string, options: PeerOptions): Pro
   })
 
   const replication = await rpc.request('replicate-ready')
-  await syncThrough(parseLength(replication, 'replication receipt'))
+  await syncThrough(parseLengthReceipt(replication, 'replication receipt'))
   await bee.ready()
 
   const upsertRemote = async (name: string, value: string): Promise<void> => {
     validateSecretName(name)
     const envelope = encryptSecret(name, value, vaultKey)
     const response = await rpc.request('put', { name, envelope })
-    await syncThrough(parseLength(response, 'write receipt'))
+    await syncThrough(parseLengthReceipt(response, 'write receipt'))
     await envMirror.applyVaultUpsert(name, value)
   }
 
   const deleteRemote = async (name: string): Promise<void> => {
     validateSecretName(name)
     const response = await rpc.request('delete', { name })
-    await syncThrough(parseLength(response, 'delete receipt'))
+    await syncThrough(parseLengthReceipt(response, 'delete receipt'))
     await envMirror.applyVaultDelete(name)
   }
 
@@ -307,7 +239,7 @@ export async function joinVault(publicKeyHex: string, options: PeerOptions): Pro
     await syncQueue
     await reconcileEnv()
     const statusResponse = await rpc.request('status')
-    remoteLength = Math.max(remoteLength, parseLength(statusResponse, 'sync status'))
+    remoteLength = Math.max(remoteLength, parseLengthReceipt(statusResponse, 'sync status'))
     await core.update()
     try {
       await syncThrough(remoteLength)
