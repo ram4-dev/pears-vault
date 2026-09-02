@@ -182,7 +182,8 @@ export async function startHost(options: HostOptions): Promise<VaultHost> {
       mux,
       core: contextHost.core,
       hello: contextHost.hello,
-      appendContext: contextHost.appendContext
+      appendContext: contextHost.appendContext,
+      deleteContext: contextHost.deleteContext
     })
     contextSessions.add(contextSession)
 
