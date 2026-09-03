@@ -7,6 +7,7 @@ import { createInterface } from 'node:readline'
 import process from 'node:process'
 import { fileURLToPath } from 'node:url'
 import { installContextSkill } from './context-skill.js'
+import { startContextWatch } from './context-watch.js'
 import {
   decodeContextPublishInput,
   validateContextQuery,
@@ -37,6 +38,7 @@ Usage:
   hackvault context add <public-key> <publish-json> [--data-dir <path>] [--bootstrap <host:port,...>]
   hackvault context supersede <public-key> <publish-json> [--data-dir <path>] [--bootstrap <host:port,...>]
   hackvault context delete <public-key> <record-id> <operation-id> [--data-dir <path>] [--bootstrap <host:port,...>]
+  hackvault context watch <public-key> [--data-dir <path>] [--bootstrap <host:port,...>]
   hackvault context skill install [--project-dir <path>]
 
 Join commands:
@@ -284,6 +286,24 @@ export async function runCli(argv = process.argv.slice(2)): Promise<void> {
     if (args.length !== 3) throw new Error(usage())
     const path = await installContextSkill(projectDir)
     console.log(JSON.stringify({ ok: true, path }))
+    return
+  }
+
+  if (args[0] === 'context' && args[1] === 'watch' && args[2] && args.length === 3) {
+    const publicKey = args[2]
+    parsePublicKey(publicKey)
+    const dataDir = dataDirOption
+    const watch = await startContextWatch(publicKey, {
+      dataDir,
+      bootstrap,
+      onConnectionStatus: message => console.error(message),
+      onSyncError: error => console.error(`Watch sync error: ${error.message}`)
+    })
+    await new Promise<void>((resolve) => {
+      process.once('SIGINT', resolve)
+      process.once('SIGTERM', resolve)
+    })
+    await watch.close()
     return
   }
 

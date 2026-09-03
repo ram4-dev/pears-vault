@@ -49,6 +49,7 @@ export interface ContextPeerOptions {
   connectionRetryDelayMs?: number
   onConnectionStatus?: (message: string) => void
   onSyncError?: (error: Error) => void
+  onSync?: (status: ContextSyncStatus) => void
 }
 
 export interface ContextPeer {
@@ -106,6 +107,7 @@ export async function joinContext(publicKeyHex: string, options: ContextPeerOpti
   let core: any
   let bee: any
   let rpc: RpcClient | undefined
+  let connectionWaiters: Array<() => void> = []
   let contextKey: Buffer
   let remoteLength = 0
   let lastSyncedAt: string | null = null
@@ -154,12 +156,24 @@ export async function joinContext(publicKeyHex: string, options: ContextPeerOpti
     return records
   }
 
+  const computeSyncStatus = (): ContextSyncStatus => ({
+    connected: rpc !== undefined,
+    dataDir: options.dataDir,
+    localLength: core.length,
+    remoteLength,
+    fullySynced: core.length >= remoteLength && (remoteLength === 0 || (core.length === 0 ? false : (core.length >= remoteLength && core.length >= remoteLength))) || remoteLength === 0,
+    lastSyncedAt,
+    lastError: lastError?.message ?? null,
+    reconnectAttempts: session.reconnectAttempts
+  })
+
   const syncThrough = async (expected: number): Promise<void> => {
     remoteLength = Math.max(remoteLength, expected)
     await downloadCoreCopy(core, remoteLength, timeoutMs)
     if (projection) await projection.refresh(await readRecords(), remoteLength)
     lastError = null
     lastSyncedAt = new Date().toISOString()
+    options.onSync?.(computeSyncStatus())
   }
 
   const scheduleSync = (value: unknown): void => {
@@ -189,6 +203,9 @@ export async function joinContext(publicKeyHex: string, options: ContextPeerOpti
         throw new Error('Host identity or context key changed while reconnecting')
       }
       rpc = nextRpc
+      const waiters = connectionWaiters
+      connectionWaiters = []
+      for (const resolve of waiters) resolve()
       nextRpc.onNotification((event, payload) => {
         if (event !== 'updated' && event !== 'context-updated') return
         try {
@@ -253,10 +270,23 @@ export async function joinContext(publicKeyHex: string, options: ContextPeerOpti
     }
   }
 
+  const waitForConnection = async (timeoutMs = 10_000): Promise<RpcClient> => {
+    if (rpc) return rpc
+    const started = Date.now()
+    while (!rpc) {
+      if (Date.now() - started >= timeoutMs) throw new Error('Context peer is disconnected')
+      await new Promise(resolve => setTimeout(resolve, 50))
+      if (connectionWaiters.length > 0) continue
+      if (rpc) break
+    }
+    if (!rpc) throw new Error('Context peer is disconnected')
+    return rpc
+  }
+
   const publish = async (input: ContextPublishInput): Promise<ContextPublishResult> => {
     validateContextPublishInput(input)
-    if (!rpc) throw new Error('Context peer is disconnected')
-    const response = parseContextReceipt(await rpc.request('context-append', { command: { ...input, peerId } }))
+    const client = await waitForConnection()
+    const response = parseContextReceipt(await client.request('context-append', { command: { ...input, peerId } }))
     await syncThrough(response.length)
     const record = await readRecord(response.id)
     if (!record) throw new Error(`Context write receipt is missing record ${response.id}`)
@@ -266,8 +296,8 @@ export async function joinContext(publicKeyHex: string, options: ContextPeerOpti
 
   const supersede = async (input: ContextPublishInput & { supersedes: string[] }): Promise<ContextPublishResult> => {
     validateContextCommand({ ...input, peerId })
-    if (!rpc) throw new Error('Context peer is disconnected')
-    const response = parseContextReceipt(await rpc.request('context-append', {
+    const client = await waitForConnection()
+    const response = parseContextReceipt(await client.request('context-append', {
       command: { ...input, peerId }
     }))
     await syncThrough(response.length)
@@ -281,8 +311,8 @@ export async function joinContext(publicKeyHex: string, options: ContextPeerOpti
     validateRecordId(id)
     const command: ContextDeleteCommand = { schema: 1, operationId, peerId, id }
     validateContextDeleteCommand(command)
-    if (!rpc) throw new Error('Context peer is disconnected')
-    const response = parseContextReceipt(await rpc.request('context-delete', { command }))
+    const client = await waitForConnection()
+    const response = parseContextReceipt(await client.request('context-delete', { command }))
     await syncThrough(response.length)
     return response
   }

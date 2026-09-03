@@ -18,6 +18,22 @@ hackvault context get <public-key> <record-id>
 
 The commands return one JSON value on stdout. Connection and synchronization diagnostics go to stderr. Use the JSON result from `sync` to confirm the replica is complete before relying on fresh context.
 
+## Live updates
+
+Run `hackvault context watch` to keep a local projection in sync automatically. The process connects to the context host, subscribes to hypercore appends, and prints one compact JSON line to stdout after every sync. It reconnects with exponential backoff when the connection drops.
+
+```bash
+hackvault context watch <public-key> [--data-dir <path>] [--bootstrap <host:port,...>]
+```
+
+Each JSON line looks like:
+
+```json
+{"ok":true,"connected":true,"localLength":42,"remoteLength":42,"fullySynced":true,"lastSyncedAt":"2026-09-01T12:00:00.000Z","lastError":null,"reconnectAttempts":0}
+```
+
+The process runs until interrupted (SIGINT / SIGTERM). Use it as a long-running background task so agents always see fresh context without calling `hackvault context sync` by hand.
+
 ## Publishing
 
 Publish only explicit, durable knowledge. Every input requires `schema`, `operationId`, `scope`, `kind`, `title`, `body`, and `author`; `source` and `createdAt` are optional. Use one of these kinds: `decision`, `product`, `architecture`, `convention`, `work-state`, or `note`.
@@ -51,3 +67,4 @@ The superseding input includes every normal publish field plus a non-empty `supe
 - Never treat `.pears-context/` files as a write API.
 - The host public key is a bearer invitation: anyone who possesses it can read and write shared context while the host is online.
 - Context is durable and available from the synchronized local replica, but new writes require a connected host.
+- Everything flows through the CLI. The projection stays read-only.
