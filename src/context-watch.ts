@@ -7,6 +7,7 @@ import { type BootstrapNode } from './validation.js'
 
 export interface ContextWatchOptions {
   dataDir?: string
+  projectDir?: string
   bootstrap?: BootstrapNode[]
   onStatus?: (status: ContextWatchStatus) => void
   onConnectionStatus?: (message: string) => void
@@ -77,6 +78,7 @@ export async function startContextWatch(publicKey: string, options: ContextWatch
 
   const peer = await joinContext(publicKey, {
     dataDir,
+    projectRoot: options.projectDir,
     bootstrap: options.bootstrap,
     connectionTimeoutMs: options.connectionTimeoutMs,
     connectionAttemptTimeoutMs: options.connectionAttemptTimeoutMs,

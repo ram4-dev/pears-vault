@@ -38,7 +38,7 @@ Usage:
   hackvault context add <public-key> <publish-json> [--data-dir <path>] [--bootstrap <host:port,...>]
   hackvault context supersede <public-key> <publish-json> [--data-dir <path>] [--bootstrap <host:port,...>]
   hackvault context delete <public-key> <record-id> <operation-id> [--data-dir <path>] [--bootstrap <host:port,...>]
-  hackvault context watch <public-key> [--data-dir <path>] [--bootstrap <host:port,...>]
+  hackvault context watch <public-key> [--project-dir <path>] [--data-dir <path>] [--bootstrap <host:port,...>]
   hackvault context skill install [--project-dir <path>]
 
 Join commands:
@@ -289,12 +289,14 @@ export async function runCli(argv = process.argv.slice(2)): Promise<void> {
     return
   }
 
-  if (args[0] === 'context' && args[1] === 'watch' && args[2] && args.length === 3) {
+  if (args[0] === 'context' && args[1] === 'watch' && args[2] && args.length >= 3) {
+    const watchProjectDir = takeOption(args, '--project-dir')
     const publicKey = args[2]
     parsePublicKey(publicKey)
     const dataDir = dataDirOption
     const watch = await startContextWatch(publicKey, {
       dataDir,
+      projectDir: watchProjectDir,
       bootstrap,
       onConnectionStatus: message => console.error(message),
       onSyncError: error => console.error(`Watch sync error: ${error.message}`)

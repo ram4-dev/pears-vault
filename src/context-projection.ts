@@ -97,7 +97,9 @@ export class ContextProjection {
 
     for (const entry of await readdir(recordDirectory, { withFileTypes: true })) {
       if (!entry.isFile() || !/\.(?:json|md)$/.test(entry.name) || expected.has(entry.name)) continue
-      await unlink(join(recordDirectory, entry.name))
+      await unlink(join(recordDirectory, entry.name)).catch((error: NodeJS.ErrnoException) => {
+        if (error.code !== 'ENOENT') throw error
+      })
     }
 
     const index: ProjectionIndex = {

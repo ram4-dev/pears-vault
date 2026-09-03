@@ -23,7 +23,7 @@ The commands return one JSON value on stdout. Connection and synchronization dia
 Run `hackvault context watch` to keep a local projection in sync automatically. The process connects to the context host, subscribes to hypercore appends, and prints one compact JSON line to stdout after every sync. It reconnects with exponential backoff when the connection drops.
 
 ```bash
-hackvault context watch <public-key> [--data-dir <path>] [--bootstrap <host:port,...>]
+hackvault context watch <public-key> [--project-dir <path>] [--data-dir <path>] [--bootstrap <host:port,...>]
 ```
 
 Each JSON line looks like:
