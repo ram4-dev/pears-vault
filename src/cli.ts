@@ -6,8 +6,19 @@ import { join } from 'node:path'
 import { createInterface } from 'node:readline'
 import process from 'node:process'
 import { fileURLToPath } from 'node:url'
+import { installContextSkill } from './context-skill.js'
+import { startContextWatch } from './context-watch.js'
+import {
+  decodeContextPublishInput,
+  validateContextQuery,
+  validateContextSupersedeInput,
+  type ContextKind,
+  type ContextPublishInput,
+  type ContextQuery
+} from './context.js'
+import { joinContext, type ContextPeer } from './context-peer.js'
 import { startHost } from './host.js'
-import { defaultHostEnvPath, defaultPeerDataDir } from './paths.js'
+import { defaultContextPeerDataDir, defaultHostEnvPath, defaultPeerDataDir, findProjectRoot } from './paths.js'
 import { joinVault, type VaultPeer } from './peer.js'
 import { parseBootstrap, parsePublicKey } from './validation.js'
 
@@ -21,6 +32,14 @@ Usage:
   hackvault add <public-key> <name> <value> [--data-dir <path>] [--bootstrap <host:port,...>]
   hackvault list <public-key> [--data-dir <path>] [--bootstrap <host:port,...>]
   hackvault get <public-key> <name> [--data-dir <path>] [--bootstrap <host:port,...>]
+  hackvault context sync <public-key> [--data-dir <path>] [--bootstrap <host:port,...>]
+  hackvault context list <public-key> [--scope <scope>] [--kind <kind>] [--limit <n>]
+  hackvault context get <public-key> <record-id> [--data-dir <path>] [--bootstrap <host:port,...>]
+  hackvault context add <public-key> <publish-json> [--data-dir <path>] [--bootstrap <host:port,...>]
+  hackvault context supersede <public-key> <publish-json> [--data-dir <path>] [--bootstrap <host:port,...>]
+  hackvault context delete <public-key> <record-id> <operation-id> [--data-dir <path>] [--bootstrap <host:port,...>]
+  hackvault context watch <public-key> [--project-dir <path>] [--data-dir <path>] [--bootstrap <host:port,...>]
+  hackvault context skill install [--project-dir <path>]
 
 Join commands:
   add <name> <value>   Encrypt and store a secret
@@ -134,6 +153,39 @@ async function withProgrammaticPeer<T>(
   }
 }
 
+async function withProgrammaticContextPeer<T>(
+  publicKey: string,
+  dataDir: string,
+  projectRoot: string,
+  bootstrap: ReturnType<typeof parseBootstrap>,
+  action: (peer: ContextPeer) => Promise<T>
+): Promise<T> {
+  const peer = await joinContext(publicKey, {
+    dataDir,
+    projectRoot,
+    bootstrap,
+    connectionTimeoutMs: 20_000,
+    connectionAttemptTimeoutMs: 5_000,
+    connectionRetryDelayMs: 500,
+    syncTimeoutMs: 15_000,
+    onConnectionStatus: message => console.error(message),
+    onSyncError: error => console.error(`Context sync error: ${error.message}`)
+  })
+  try {
+    return await withTimeout(action(peer), 15_000, 'Context command')
+  } finally {
+    await peer.close()
+  }
+}
+
+function decodeJsonArgument(value: string, context: string): unknown {
+  try {
+    return JSON.parse(value) as unknown
+  } catch (error) {
+    throw new Error(`${context} must be valid JSON`, { cause: error })
+  }
+}
+
 export async function runCli(argv = process.argv.slice(2)): Promise<void> {
   const args = [...argv]
   if (args.length === 1 && (args[0] === '--help' || args[0] === '-h')) {
@@ -227,6 +279,99 @@ export async function runCli(argv = process.argv.slice(2)): Promise<void> {
       await peer.close()
     }
     return
+  }
+
+  if (args[0] === 'context' && args[1] === 'skill' && args[2] === 'install') {
+    const projectDir = takeOption(args, '--project-dir') ?? process.cwd()
+    if (args.length !== 3) throw new Error(usage())
+    const path = await installContextSkill(projectDir)
+    console.log(JSON.stringify({ ok: true, path }))
+    return
+  }
+
+  if (args[0] === 'context' && args[1] === 'watch' && args[2] && args.length >= 3) {
+    const watchProjectDir = takeOption(args, '--project-dir')
+    const publicKey = args[2]
+    parsePublicKey(publicKey)
+    const dataDir = dataDirOption
+    const watch = await startContextWatch(publicKey, {
+      dataDir,
+      projectDir: watchProjectDir,
+      bootstrap,
+      onConnectionStatus: message => console.error(message),
+      onSyncError: error => console.error(`Watch sync error: ${error.message}`)
+    })
+    await new Promise<void>((resolve) => {
+      process.once('SIGINT', resolve)
+      process.once('SIGTERM', resolve)
+    })
+    await watch.close()
+    return
+  }
+
+  if (args[0] === 'context' && args[1] && args[2] && args[2].length > 0) {
+    const projectRoot = findProjectRoot()
+    const command = args[1]
+    const publicKey = args[2]
+    parsePublicKey(publicKey)
+    const dataDir = dataDirOption ?? defaultContextPeerDataDir(publicKey, process.cwd())
+
+    if (command === 'sync' && args.length === 3) {
+      const status = await withProgrammaticContextPeer(publicKey, dataDir, projectRoot, bootstrap, peer => peer.syncStatus())
+      console.log(JSON.stringify(status))
+      return
+    }
+
+    if (command === 'list' && args.length >= 3) {
+      const scope = takeOption(args, '--scope')
+      const kind = takeOption(args, '--kind') as ContextKind | undefined
+      const limitValue = takeOption(args, '--limit')
+      const limit = limitValue === undefined ? undefined : Number(limitValue)
+      const query: ContextQuery = { scope, kind, limit }
+      validateContextQuery(query)
+      if (args.length !== 3) throw new Error(usage())
+      const records = await withProgrammaticContextPeer(publicKey, dataDir, projectRoot, bootstrap, async peer => {
+        await peer.syncStatus()
+        return peer.list(query)
+      })
+      console.log(JSON.stringify(records))
+      return
+    }
+
+    if (command === 'get' && args[3] && args.length === 4) {
+      const id = args[3]
+      const record = await withProgrammaticContextPeer(publicKey, dataDir, projectRoot, bootstrap, async peer => {
+        await peer.syncStatus()
+        return peer.get(id)
+      })
+      console.log(JSON.stringify(record))
+      return
+    }
+
+    if ((command === 'add' || command === 'supersede') && args[3] && args.length === 4) {
+      const raw = decodeJsonArgument(args[3], `context ${command} input`)
+      let input: ContextPublishInput & { supersedes?: string[] }
+      if (command === 'add') {
+        const encoded = JSON.stringify(raw)
+        input = decodeContextPublishInput(encoded)
+      } else {
+        validateContextSupersedeInput(raw)
+        input = raw as ContextPublishInput & { supersedes: string[] }
+      }
+      const result = await withProgrammaticContextPeer(publicKey, dataDir, projectRoot, bootstrap, peer =>
+        command === 'add' ? peer.publish(input) : peer.supersede(input as ContextPublishInput & { supersedes: string[] })
+      )
+      console.log(JSON.stringify(result))
+      return
+    }
+
+    if (command === 'delete' && args[3] && args[4] && args.length === 5) {
+      const result = await withProgrammaticContextPeer(publicKey, dataDir, projectRoot, bootstrap, peer =>
+        peer.delete(args[3], args[4])
+      )
+      console.log(JSON.stringify(result))
+      return
+    }
   }
 
   throw new Error(usage())

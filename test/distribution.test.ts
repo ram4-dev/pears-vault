@@ -20,7 +20,14 @@ function parseJson<T>(value: string, source: string): T {
 }
 
 test('package metadata and CLI usage expose hackvault', async () => {
-  const packageJson = parseJson<{ name: string; bin: Record<string, string> }>(
+  const packageJson = parseJson<{
+    name: string
+    bin: Record<string, string>
+    main: string
+    types: string
+    exports: Record<string, unknown>
+    files: string[]
+  }>(
     await readFile('package.json', 'utf8'),
     'package.json'
   )
@@ -31,6 +38,12 @@ test('package metadata and CLI usage expose hackvault', async () => {
 
   assert.equal(packageJson.name, 'hackvault')
   assert.deepEqual(packageJson.bin, { hackvault: 'dist/cli.js' })
+  assert.equal(packageJson.main, 'dist/index.js')
+  assert.equal(packageJson.types, 'dist/index.d.ts')
+  assert.deepEqual(packageJson.exports, {
+    '.': { types: './dist/index.d.ts', import: './dist/index.js' }
+  })
+  assert.equal(packageJson.files.includes('skills/hackvault-context/SKILL.md'), true)
   assert.equal(packageLock.name, 'hackvault')
   assert.equal(packageLock.packages[''].name, 'hackvault')
   assert.deepEqual(packageLock.packages[''].bin, { hackvault: 'dist/cli.js' })
@@ -89,6 +102,8 @@ test(
       )
       await writeFile(join(sourceDir, 'dist', 'cli.js'), "#!/usr/bin/env node\nconsole.log('fake-hackvault')\n")
       await chmod(join(sourceDir, 'dist', 'cli.js'), 0o755)
+      await mkdir(join(sourceDir, 'skills', 'hackvault-context'), { recursive: true })
+      await writeFile(join(sourceDir, 'skills', 'hackvault-context', 'SKILL.md'), '# fake context skill\n')
 
       const env = {
         ...process.env,
@@ -102,6 +117,10 @@ test(
       await access(wrapper, constants.X_OK)
       assert.match(await readFile(wrapper, 'utf8'), /hackvault-installer-managed/)
       assert.equal((await execFileAsync(wrapper, [], { env })).stdout.trim(), 'fake-hackvault')
+      assert.equal(
+        await readFile(join(installRoot, 'skills', 'hackvault-context', 'SKILL.md'), 'utf8'),
+        '# fake context skill\n'
+      )
 
       const second = await execFileAsync('bash', ['scripts/install.sh'], { env })
       assert.match(second.stdout, /Installed hackvault/)

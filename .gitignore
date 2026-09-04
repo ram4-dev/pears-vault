@@ -14,3 +14,11 @@ coverage/
 # Generated plaintext environment mirrors
 .env
 env-snapshot.json
+.pears-context/
+.codex/skills/hackvault-context/
+
+# Riptide artifacts (cloud-synced)
+.humanlayer/tasks/
+
+# Riptide artifacts (cloud-synced)
+.humanlayer/tasks/

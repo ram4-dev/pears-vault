@@ -4,7 +4,7 @@ import { existsSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 
-function findProjectRoot(cwd: string): string {
+export function findProjectRoot(cwd = process.cwd()): string {
   let current = resolve(cwd)
   while (true) {
     if (existsSync(join(current, '.git'))) return current
@@ -15,11 +15,44 @@ function findProjectRoot(cwd: string): string {
 }
 
 export function defaultHostEnvPath(cwd = process.cwd()): string {
-  return join(findProjectRoot(cwd), '.env')
+  return projectEnvPath(findProjectRoot(cwd))
+}
+
+export function projectEnvPath(projectRoot: string): string {
+  return join(projectRoot, '.env')
+}
+
+export function peerStorageIdentity(projectRoot: string, hostPublicKey: string): string {
+  return createHash('sha256').update(projectRoot).update('\0').update(hostPublicKey).digest('hex').slice(0, 20)
 }
 
 export function defaultPeerDataDir(publicKey: string, cwd = process.cwd(), home = homedir()): string {
-  const projectRoot = findProjectRoot(cwd)
-  const identity = createHash('sha256').update(projectRoot).update('\0').update(publicKey).digest('hex').slice(0, 20)
-  return join(home, '.pears-vault', 'peers', identity)
+  return join(home, '.pears-vault', 'peers', peerStorageIdentity(findProjectRoot(cwd), publicKey))
+}
+
+export function contextStorageIdentity(projectRoot: string, hostPublicKey: string): string {
+  return createHash('sha256')
+    .update('context-v1')
+    .update('\0')
+    .update(projectRoot)
+    .update('\0')
+    .update(hostPublicKey)
+    .digest('hex')
+    .slice(0, 20)
+}
+
+export function defaultContextPeerDataDir(publicKey: string, cwd = process.cwd(), home = homedir()): string {
+  return join(home, '.pears-vault', 'context-peers', contextStorageIdentity(findProjectRoot(cwd), publicKey))
+}
+
+export function contextCorePath(dataDir: string): string {
+  return join(dataDir, 'context-hypercore')
+}
+
+export function contextProjectionPath(projectRoot: string): string {
+  return join(projectRoot, '.pears-context')
+}
+
+export function contextSkillPath(projectRoot: string): string {
+  return join(projectRoot, '.codex', 'skills', 'hackvault-context', 'SKILL.md')
 }

@@ -136,6 +136,9 @@ mkdir -p "$(dirname "$INSTALL_ROOT")" "$BIN_DIR"
 
 STAGE_DIR="$(mktemp -d "$(dirname "$INSTALL_ROOT")/.hackvault-stage.XXXXXX")"
 cp -R "$SOURCE_DIR/dist" "$STAGE_DIR/dist"
+if [[ -d "$SOURCE_DIR/skills" ]]; then
+	cp -R "$SOURCE_DIR/skills" "$STAGE_DIR/skills"
+fi
 cp "$SOURCE_DIR/package.json" "$SOURCE_DIR/package-lock.json" "$STAGE_DIR/"
 printf '%s\n' "$BIN_DIR" >"$STAGE_DIR/.bin-path"
 [[ ! -f "$SOURCE_DIR/README.md" ]] || cp "$SOURCE_DIR/README.md" "$STAGE_DIR/"

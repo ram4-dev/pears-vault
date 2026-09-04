@@ -6,7 +6,9 @@ import Hypercore from 'hypercore'
 import Hyperbee from 'hyperbee'
 import { decryptSecret, encryptSecret, validateEnvelope } from './crypto.js'
 import { DotEnvMirror, type EnvChanges } from './env.js'
-import { createMux, serveRpc, type RpcRequest, type RpcServer } from './protocol.js'
+import { attachHostSession, type HostSession } from './host-session.js'
+import { attachContextHostSession, openContextHost, type ContextHostSession } from './context-host.js'
+import { createMux } from './protocol.js'
 import { ensureDataDir, loadOrCreateDhtKeyPair, loadOrCreateVaultKey } from './storage.js'
 import { type BootstrapNode, validateSecretName } from './validation.js'
 
@@ -21,6 +23,7 @@ export interface HostOptions {
 export interface VaultHost {
   publicKey: string
   coreKey: string
+  contextCoreKey: string
   close: () => Promise<void>
 }
 
@@ -77,17 +80,30 @@ export async function startHost(options: HostOptions): Promise<VaultHost> {
   }
   await applyStartupEnvChanges()
 
+  const contextSessions = new Set<ContextHostSession>()
+  const contextHost = await openContextHost({
+    dataDir: options.dataDir,
+    onUpdate: receipt => {
+      for (const session of contextSessions) {
+        try {
+          session.notify('updated', receipt)
+        } catch {
+          contextSessions.delete(session)
+        }
+      }
+    }
+  })
+
   const dht = new DHT(options.bootstrap ? { bootstrap: options.bootstrap } : undefined)
-  const sockets = new Set<any>()
-  const rpcServers = new Set<RpcServer>()
+  const sessions = new Set<HostSession>()
   let writeQueue: Promise<unknown> = Promise.resolve()
 
   const broadcastUpdate = (name: string, length: number, deleted: boolean): void => {
-    for (const rpc of rpcServers) {
+    for (const session of sessions) {
       try {
-        rpc.notify('updated', { name, length, deleted })
+        session.notify('updated', { name, length, deleted })
       } catch {
-        rpcServers.delete(rpc)
+        sessions.delete(session)
       }
     }
   }
@@ -144,54 +160,36 @@ export async function startHost(options: HostOptions): Promise<VaultHost> {
   }
 
   const server = dht.createServer((socket: any) => {
-    sockets.add(socket)
     const mux = createMux(socket)
-    let replicationAttached = false
-    const rpc = serveRpc(mux, async (request: RpcRequest): Promise<unknown> => {
-      if (request.type === 'hello') {
-        return {
-          protocol: 1,
-          coreKey: b4a.toString(core.key, 'hex'),
-          vaultKey: vaultKey.toString('hex'),
-          length: core.length
-        }
-      }
-
-      if (request.type === 'replicate-ready') {
-        if (!replicationAttached) {
-          replicationAttached = true
-          core.replicate(mux)
-        }
-        return { length: core.length }
-      }
-
-      if (request.type === 'status') return { length: core.length }
-
-      if (request.type === 'put') {
-        validateSecretName(request.name)
-        const name = request.name as string
-        validateEnvelope(request.envelope)
-        const encoded = JSON.stringify(request.envelope)
-        const plaintext = decryptSecret(name, request.envelope, vaultKey)
-        const length = await upsertVault(name, encoded, plaintext, true)
-        return { name, length, deleted: false }
-      }
-
-      if (request.type === 'delete') {
-        validateSecretName(request.name)
-        const name = request.name as string
-        const length = await deleteVault(name, true)
-        return { name, length, deleted: true }
-      }
-
-      throw new Error(`Unsupported request type: ${request.type}`)
+    const session = attachHostSession({
+      socket,
+      mux,
+      core,
+      hello: () => ({
+        protocol: 1,
+        coreKey: b4a.toString(core.key, 'hex'),
+        vaultKey: vaultKey.toString('hex'),
+        length: core.length
+      }),
+      vaultKey,
+      upsertVault: (name, encoded, plaintext) => upsertVault(name, encoded, plaintext, true),
+      deleteVault: name => deleteVault(name, true)
     })
-    rpcServers.add(rpc)
+    sessions.add(session)
+
+    const contextSession = attachContextHostSession({
+      socket,
+      mux,
+      core: contextHost.core,
+      hello: contextHost.hello,
+      appendContext: contextHost.appendContext,
+      deleteContext: contextHost.deleteContext
+    })
+    contextSessions.add(contextSession)
 
     const cleanup = (): void => {
-      sockets.delete(socket)
-      rpcServers.delete(rpc)
-      rpc.close()
+      sessions.delete(session)
+      contextSessions.delete(contextSession)
     }
     socket.once('close', cleanup)
     socket.once('error', cleanup)
@@ -214,12 +212,17 @@ export async function startHost(options: HostOptions): Promise<VaultHost> {
   return {
     publicKey,
     coreKey,
+    contextCoreKey: contextHost.coreKey,
     close: async () => {
       clearInterval(watcher)
       await watcherQueue
-      for (const socket of sockets) socket.destroy()
+      for (const session of sessions) session.close()
+      sessions.clear()
+      for (const session of contextSessions) session.close()
+      contextSessions.clear()
       await server.close()
       await dht.destroy()
+      await contextHost.close()
       await bee.close()
     }
   }

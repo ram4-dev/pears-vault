@@ -24,6 +24,7 @@ Hackvault gives small teams, local agents, and multi-machine development environ
 - **Automatic `.env` mirroring** — vault writes appear in each connected project, while local `.env` edits flow back to the vault.
 - **CLI-first automation** — bounded `add`, `list`, `get`, and `sync` commands return JSON and never wait on stdin.
 - **Offline local replicas** — peers keep a complete disk-backed encrypted copy after synchronization.
+- **Shared project context** — agents can publish durable decisions, product facts, architecture notes, conventions, and work state through a separate context domain.
 
 ## Install
 
@@ -110,6 +111,29 @@ Edit that line locally and Hackvault upserts the new value. Remove the managed l
 | `hackvault get <public-key> <name>` | Decrypt one value locally. | JSON object; missing keys return `value: null`. |
 | `hackvault sync <public-key>` | Download every current block and reconcile `.env`. | JSON synchronization status, then exits. |
 | `hackvault --help` | Show command syntax. | Prints usage and exits successfully. |
+
+### Shared context
+
+Hackvault context is a separate encrypted and replicated domain. It does not share the secret vault's keyspace, encryption key, or `.env` mirror. Install the project-local agent workflow from the packaged source:
+
+```bash
+hackvault context skill install --project-dir .
+```
+
+The skill is installed at `.codex/skills/hackvault-context/SKILL.md`. Context commands return exactly one JSON value on stdout and keep connection diagnostics on stderr:
+
+```bash
+hackvault context sync <public-key>
+hackvault context list <public-key> [--scope <scope>] [--kind <kind>] [--limit <n>]
+hackvault context get <public-key> <record-id>
+hackvault context add <public-key> '<publish-json>'
+hackvault context supersede <public-key> '<publish-json-with-supersedes>'
+hackvault context delete <public-key> <record-id> <operation-id>
+```
+
+Publish inputs require `schema`, `operationId`, `scope`, `kind`, `title`, `body`, and `author`. Supported kinds are `decision`, `product`, `architecture`, `convention`, `work-state`, and `note`. Operation IDs make retries idempotent. Supersession and deletion remain visible in the record lifecycle metadata rather than silently erasing prior knowledge.
+
+Synchronized context is projected read-only under `<project-root>/.pears-context/` as `index.json` plus JSON and Markdown record files. Do not edit or copy those files to publish context; use the CLI or the TypeScript API. Possession of the host public key is a bearer invitation that grants context read/write access while the host is online.
 
 ### Common options
 
