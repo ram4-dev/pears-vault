@@ -793,7 +793,7 @@ const EndCard = () => {
         }}
       >
         <div style={{ color: palette.green, fontSize: 66, fontWeight: 900, letterSpacing: -2 }}>Hackvault</div>
-        <div style={{ color: palette.text, fontSize: 25, marginTop: 10 }}>Encrypted secrets. Synced where you build.</div>
+        <div style={{ color: palette.text, fontSize: 25, marginTop: 10 }}>Encrypted secrets and shared agent context.</div>
         <div style={{ ...mono, color: palette.cyan, fontSize: 21, marginTop: 28 }}>github.com/ram4-dev/pears-vault</div>
         <div
           style={{
@@ -822,18 +822,177 @@ const EndCard = () => {
   )
 }
 
+const ContextRecord = ({ frame, start, title, kind, body }: { frame: number; start: number; title: string; kind: string; body: string }) => (
+  <div
+    style={{
+      border: `1px solid ${frame >= start ? palette.green : palette.line}`,
+      borderRadius: 16,
+      background: '#091710',
+      padding: '18px 20px',
+      boxShadow: frame >= start ? '0 0 30px rgba(103,245,168,0.18)' : 'none',
+      opacity: interpolate(frame, [start, start + 14], [0, 1], { extrapolateLeft: 'clamp', extrapolateRight: 'clamp' }),
+      translate: interpolate(frame, [start, start + 14], ['0px 18px', '0px 0px'], {
+        extrapolateLeft: 'clamp',
+        extrapolateRight: 'clamp',
+        easing: ease
+      })
+    }}
+  >
+    <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
+      <span style={{ color: palette.green, fontSize: 19 }}>◆</span>
+      <span style={{ color: palette.text, fontSize: 19, fontWeight: 850 }}>{title}</span>
+      <span style={{ ...mono, marginLeft: 'auto', color: palette.cyan, fontSize: 13 }}>{kind}</span>
+    </div>
+    <div style={{ color: palette.muted, fontSize: 16, lineHeight: 1.45 }}>{body}</div>
+  </div>
+)
+
+const ContextPublishScene = () => {
+  const frame = useCurrentFrame()
+  return (
+    <SceneFrame duration={180} step="02" title="PUBLISH SHARED CONTEXT">
+      <div style={{ position: 'absolute', left: 60, top: 145, width: 535 }}>
+        <Window title="agent-a — ~/project" style={{ height: 410 }}>
+          <div style={{ ...mono, padding: '23px 22px', fontSize: 17, lineHeight: 1.65 }}>
+            <TerminalLine frame={frame} start={12} prompt>
+              hackvault context add a8f2…91ce
+            </TerminalLine>
+            <TerminalLine frame={frame} start={28} color={palette.cyan}>
+              {'  \'{"kind":"decision",'}
+            </TerminalLine>
+            <TerminalLine frame={frame} start={42} color={palette.cyan}>
+              {'   "scope":"checkout",'}
+            </TerminalLine>
+            <TerminalLine frame={frame} start={56} color={palette.cyan}>
+              {'   "title":"Use one context hub"'}
+            </TerminalLine>
+            <TerminalLine frame={frame} start={70} color={palette.cyan}>
+              {'  }\''}
+            </TerminalLine>
+            <div style={{ height: 18 }} />
+            <TerminalLine frame={frame} start={92} color={palette.green}>
+              {'{"ok":true,"recordId":"ctx_01"}'}
+            </TerminalLine>
+            <TerminalLine frame={frame} start={110} color={palette.muted}>
+              operationId makes retries safe
+            </TerminalLine>
+          </div>
+        </Window>
+      </div>
+
+      <div
+        style={{
+          position: 'absolute',
+          left: 610,
+          top: 300,
+          width: interpolate(frame, [72, 120], [0, 210], { extrapolateLeft: 'clamp', extrapolateRight: 'clamp', easing: ease }),
+          height: 4,
+          borderRadius: 99,
+          background: `linear-gradient(90deg, ${palette.green}, ${palette.cyan})`,
+          boxShadow: `0 0 18px ${palette.green}`
+        }}
+      />
+      <div style={{ position: 'absolute', left: 688, top: 250 }}>
+        <VaultIcon frame={frame} activeAt={76} size={115} />
+      </div>
+      <div style={{ position: 'absolute', left: 700, top: 375, color: palette.green, fontSize: 16, fontWeight: 900 }}>ENCRYPTED P2P</div>
+
+      <div style={{ position: 'absolute', right: 60, top: 145, width: 440 }}>
+        <Window title="shared context — encrypted replica" style={{ height: 410 }}>
+          <div style={{ padding: 20, display: 'grid', gap: 13 }}>
+            <ContextRecord frame={frame} start={55} title="Use one context hub" kind="decision" body="Durable decisions are readable by every connected agent." />
+            <ContextRecord frame={frame} start={82} title="Checkout architecture" kind="architecture" body="The local projection stays read-only and source-grounded." />
+            <div style={{ ...mono, color: palette.greenSoft, fontSize: 15, marginTop: 4, opacity: interpolate(frame, [108, 124], [0, 1], { extrapolateLeft: 'clamp', extrapolateRight: 'clamp' }) }}>
+              ✓ replicated to local Hypercore
+            </div>
+          </div>
+        </Window>
+      </div>
+      <SceneLabel frame={frame} start={125}>Publish once → every agent can retrieve the decision</SceneLabel>
+    </SceneFrame>
+  )
+}
+
+const ContextProjectionScene = () => {
+  const frame = useCurrentFrame()
+  return (
+    <SceneFrame duration={180} step="03" title="WATCH THE LOCAL PROJECTION">
+      <div style={{ position: 'absolute', left: 66, top: 155, width: 485 }}>
+        <Window title="agent-b — ~/checkout" style={{ height: 408 }}>
+          <div style={{ ...mono, padding: '24px 22px', fontSize: 18, lineHeight: 1.7 }}>
+            <TerminalLine frame={frame} start={12} prompt>
+              hackvault context watch a8f2…91ce
+            </TerminalLine>
+            <TerminalLine frame={frame} start={36} color={palette.green}>
+              ✓ context replica synced
+            </TerminalLine>
+            <TerminalLine frame={frame} start={56} color={palette.muted}>
+              Watching for new records…
+            </TerminalLine>
+            <div style={{ height: 24 }} />
+            <TerminalLine frame={frame} start={84} color={palette.cyan}>
+              new: ctx_01 / decision
+            </TerminalLine>
+            <TerminalLine frame={frame} start={101} color={palette.greenSoft}>
+              projection refreshed ✓
+            </TerminalLine>
+          </div>
+        </Window>
+      </div>
+
+      <svg style={{ position: 'absolute', inset: 0, pointerEvents: 'none' }} width="1280" height="720" viewBox="0 0 1280 720">
+        <path
+          d="M552 315 C625 250 665 250 725 315"
+          fill="none"
+          stroke={palette.green}
+          strokeWidth="4"
+          pathLength="1"
+          style={{
+            opacity: interpolate(frame, [68, 84], [0, 1], { extrapolateLeft: 'clamp', extrapolateRight: 'clamp' }),
+            strokeDasharray: `${interpolate(frame, [68, 100], [0.01, 1], { extrapolateLeft: 'clamp', extrapolateRight: 'clamp' })} 1`
+          }}
+        />
+      </svg>
+
+      <div style={{ position: 'absolute', right: 66, top: 145, width: 575 }}>
+        <Window title="~/checkout/.pears-context" style={{ height: 408 }}>
+          <div style={{ padding: 24 }}>
+            <div style={{ ...mono, color: palette.cyan, fontSize: 18, marginBottom: 17 }}>index.json</div>
+            <div style={{ display: 'grid', gap: 12 }}>
+              <ContextRecord frame={frame} start={28} title="ctx_01.json" kind="record" body="Encrypted record metadata and lifecycle state." />
+              <ContextRecord frame={frame} start={52} title="ctx_01.md" kind="markdown" body="Readable projection for agents and code review." />
+            </div>
+            <div
+              style={{
+                ...mono,
+                marginTop: 20,
+                color: palette.amber,
+                fontSize: 14,
+                opacity: interpolate(frame, [112, 128], [0, 1], { extrapolateLeft: 'clamp', extrapolateRight: 'clamp' })
+              }}
+            >
+              read-only projection · use CLI to publish
+            </div>
+          </div>
+        </Window>
+      </div>
+      <SceneLabel frame={frame} start={130}>New context arrives → local files update automatically</SceneLabel>
+    </SceneFrame>
+  )
+}
+
 export const HackvaultDemo = () => (
   <AbsoluteFill style={{ background: palette.bg }}>
     <Sequence name="Start the host" from={0} durationInFrames={120}>
       <HostScene />
     </Sequence>
-    <Sequence name="Edit env and push to vault" from={120} durationInFrames={180}>
-      <EditEnvScene />
+    <Sequence name="Publish shared context" from={120} durationInFrames={180}>
+      <ContextPublishScene />
     </Sequence>
-    <Sequence name="Connect peers" from={300} durationInFrames={150}>
-      <ConnectingPeersScene />
+    <Sequence name="Watch local context projection" from={300} durationInFrames={180}>
+      <ContextProjectionScene />
     </Sequence>
-    <Sequence name="Update peer env files" from={450} durationInFrames={180}>
+    <Sequence name="Context lifecycle" from={480} durationInFrames={150}>
       <LiveUpdateScene />
     </Sequence>
     <Sequence name="End card" from={630} durationInFrames={90}>
