@@ -11,7 +11,7 @@
   <a href="https://docs.pears.com/building-blocks/hyperdht"><img alt="P2P: HyperDHT" src="https://img.shields.io/badge/P2P-HyperDHT-75baff"></a>
 </p>
 
-<video src="assets/context-hub-demo.mp4" controls muted playsinline width="100%" title="Hackvault shared context demo"></video>
+https://github.com/user-attachments/assets/def26987-6bee-43bf-9d10-2e029047ddbc
 
 > If your Markdown viewer does not render video, [watch or download the 24-second shared context demo](assets/context-hub-demo.mp4).
 
